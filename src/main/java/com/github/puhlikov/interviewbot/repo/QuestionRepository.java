@@ -12,5 +12,3 @@ public interface QuestionRepository extends JpaRepository<Question, Long> {
 	@Query(value = "SELECT * FROM questions WHERE is_active = true ORDER BY random() LIMIT :limit", nativeQuery = true)
 	List<Question> findRandomActive(@Param("limit") int limit);
 }
-
-

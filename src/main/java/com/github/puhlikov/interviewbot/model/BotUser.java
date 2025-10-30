@@ -55,4 +55,7 @@ public class BotUser {
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
+
+    @Column(name = "questions_per_session")
+    private Integer questionsPerSession = 20;
 }

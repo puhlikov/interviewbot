@@ -1,6 +1,7 @@
 package com.github.puhlikov.interviewbot.service;
 
 import com.github.puhlikov.interviewbot.enums.RegistrationState;
+import com.github.puhlikov.interviewbot.enums.SettingsState;
 import com.github.puhlikov.interviewbot.model.BotUser;
 import com.github.puhlikov.interviewbot.repo.BotUserRepository;
 import org.springframework.stereotype.Service;
@@ -12,12 +13,15 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class RegistrationService {
 
     private final BotUserRepository userRepository;
+    private final Map<Long, SettingsState> userSettingsState = new ConcurrentHashMap<>();
 
     public RegistrationService(BotUserRepository userRepository) {
         this.userRepository = userRepository;
@@ -99,6 +103,7 @@ public class RegistrationService {
             BotUser user = userOpt.get();
             user.setTimezone(timezone);
             user.setRegistrationState(RegistrationState.COMPLETED);
+            user.setQuestionsPerSession(20);
             return userRepository.save(user);
         }
         return null;
@@ -129,5 +134,38 @@ public class RegistrationService {
         keyboardMarkup.setOneTimeKeyboard(true);
 
         return keyboardMarkup;
+    }
+
+    public BotUser updateQuestionsPerSession(Long chatId, String questionsCountStr) {
+        try {
+            int questionsCount = Integer.parseInt(questionsCountStr);
+            if (questionsCount < 1 || questionsCount > 50) {
+                throw new IllegalArgumentException("Количество вопросов должно быть от 1 до 50");
+            }
+
+            Optional<BotUser> userOpt = userRepository.findByChatId(chatId);
+            if (userOpt.isPresent()) {
+                BotUser user = userOpt.get();
+                user.setQuestionsPerSession(questionsCount);
+                clearSettingsState(chatId);
+                return userRepository.save(user);
+            } else {
+                throw new IllegalArgumentException("Пользователь не найден");
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Пожалуйста, введите корректное число от 1 до 50");
+        }
+    }
+
+    public void startQuestionsCountSetting(Long chatId) {
+        userSettingsState.put(chatId, SettingsState.AWAITING_QUESTIONS_COUNT);
+    }
+
+    public boolean isInSettingsState(Long chatId, SettingsState state) {
+        return userSettingsState.getOrDefault(chatId, SettingsState.NONE) == state;
+    }
+
+    public void clearSettingsState(Long chatId) {
+        userSettingsState.remove(chatId);
     }
 }

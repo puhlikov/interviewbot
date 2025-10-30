@@ -2,9 +2,11 @@ package com.github.puhlikov.interviewbot.bot;
 
 import com.github.puhlikov.interviewbot.enums.QuestionState;
 import com.github.puhlikov.interviewbot.enums.RegistrationState;
+import com.github.puhlikov.interviewbot.enums.SettingsState;
 import com.github.puhlikov.interviewbot.model.BotUser;
 import com.github.puhlikov.interviewbot.model.Question;
 import com.github.puhlikov.interviewbot.repo.BotUserRepository;
+import com.github.puhlikov.interviewbot.service.QuestionCacheService;
 import com.github.puhlikov.interviewbot.service.QuestionService;
 import com.github.puhlikov.interviewbot.service.QuestionSessionService;
 import com.github.puhlikov.interviewbot.service.RegistrationService;
@@ -36,6 +38,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     private final QuestionSessionService questionSessionService;
     private final QuestionService questionService;
     private final WorkingApiService workingApiService;
+    private final QuestionCacheService questionCacheService;
 
     public InterviewTelegramBot(
             @Value("${telegram.bot.username}") String username,
@@ -46,7 +49,8 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
             RegistrationService registrationService,
             QuestionSessionService questionSessionService,
             QuestionService questionService,
-            WorkingApiService workingApiService
+            WorkingApiService workingApiService,
+            QuestionCacheService questionCacheService
     ) {
         super(token);
         this.username = username;
@@ -57,10 +61,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         this.questionSessionService = questionSessionService;
         this.questionService = questionService;
         this.workingApiService = workingApiService;
-
-        System.out.println("🤖 Bot initialized:");
-        System.out.println("   Username: " + username);
-        System.out.println("   Token: " + (token != null ? token.substring(0, 10) + "..." : "null"));
+        this.questionCacheService = questionCacheService;
     }
 
     @Override
@@ -99,7 +100,13 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
         BotUser user = userOpt.get();
 
+        // Проверяем сессию вопросов
         if (handleQuestionSession(chatId, text)) {
+            return;
+        }
+
+        // Проверяем настройки
+        if (handleSettings(chatId, text, user)) {
             return;
         }
 
@@ -149,7 +156,8 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                         "🎉 Регистрация завершена! 🎉\n\n" +
                                 "Теперь вы будете получать ежедневные уведомления в " +
                                 user.getScheduleTime() + " по времени " + text + "\n\n" +
-                                "Когда придет время, я спрошу, хотите ли вы пройти тест.",
+                                "Количество вопросов в сессии: " + (user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : 20) + "\n\n" +
+                                "Используйте /menu для доступа к функциям бота.",
                         removeKeyboard
                 );
                 break;
@@ -162,9 +170,11 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
     private void handleCompletedUser(Long chatId, String text, BotUser user) {
         if ("/question".equalsIgnoreCase(text)) {
-            sendQuestion(chatId);
+            startQuestionSession(chatId, user);
         } else if ("/add_question".equalsIgnoreCase(text)) {
             startAddingQuestion(chatId);
+        } else if ("/settings".equalsIgnoreCase(text)) {
+            showSettingsMenu(chatId, user);
         } else if ("/menu".equalsIgnoreCase(text)) {
             showMainMenu(chatId);
         } else {
@@ -193,32 +203,10 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
     private void handleCallback(CallbackQuery cq) {
         var data = cq.getData();
-        if (data != null && data.startsWith("ANS:")) {
-            var qid = Long.parseLong(data.substring(4));
-            questions.getById(qid).ifPresent(q -> {
-                try {
-                    execute(AnswerCallbackQuery.builder()
-                            .callbackQueryId(cq.getId())
-                            .text("Генерируем ответ...")
-                            .build());
-                } catch (Exception ignored) {
-                }
+        var chatId = cq.getMessage().getChatId();
 
-                workingApiService.getAnswer(q.getQuestionText()).subscribe(answer -> { // Заменяем deepseek на workingApiService
-                    try {
-                        String formattedAnswer = "🤖 Ответ:\n\n" + answer;
-                        execSend(cq.getMessage().getChatId(), formattedAnswer);
-                    } catch (Exception ignored) {
-                    }
-                });
-//                deepseek.getAnswer(q.getQuestionText()).subscribe(answer -> {
-//                    try {
-//                        String formattedAnswer = "🤖 Ответ:\n\n" + answer;
-//                        execSend(cq.getMessage().getChatId(), formattedAnswer);
-//                    } catch (Exception ignored) {
-//                    }
-//                });
-            });
+        if (data != null && data.startsWith("ANS:")) {
+            handleAnswerCallback(cq, data.substring(4));
         } else if (data != null && data.equals("YES_TEST")) {
             handleTestResponse(cq, true);
         } else if (data != null && data.equals("NO_TEST")) {
@@ -226,24 +214,43 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         } else if (data != null && data.startsWith("DIFF_")) {
             handleDifficultySelection(cq, data.substring(5));
         } else if (data != null && data.equals("RANDOM_QUESTION")) {
-            try {
-                execute(AnswerCallbackQuery.builder()
-                        .callbackQueryId(cq.getId())
-                        .text("Ищем случайный вопрос...")
-                        .build());
-            } catch (Exception ignored) {
-            }
-            sendQuestion(cq.getMessage().getChatId());
+            handleRandomQuestion(cq);
         } else if (data != null && data.equals("ADD_QUESTION")) {
+            handleAddQuestion(cq);
+        } else if (data != null && data.equals("NEXT_QUESTION")) {
+            handleNextQuestion(chatId);
+        } else if (data != null && data.equals("STOP_QUESTIONS")) {
+            handleStopQuestions(chatId);
+        } else if (data != null && data.equals("SETTINGS_TIME")) {
+            handleSettingsTime(chatId);
+        } else if (data != null && data.equals("SETTINGS_COUNT")) {
+            handleSettingsCount(chatId);
+        } else if (data != null && data.equals("SETTINGS_MENU")) {
+            handleSettingsMenu(cq);
+        } else if (data != null && data.equals("BACK_TO_MENU")) {
+            handleBackToMenu(chatId);
+        }
+    }
+
+    private void handleAnswerCallback(CallbackQuery cq, String questionId) {
+        var qid = Long.parseLong(questionId);
+        questions.getById(qid).ifPresent(q -> {
             try {
                 execute(AnswerCallbackQuery.builder()
                         .callbackQueryId(cq.getId())
-                        .text("Начинаем добавление вопроса...")
+                        .text("Генерируем ответ...")
                         .build());
-            } catch (Exception ignored) {
-            }
-            startAddingQuestion(cq.getMessage().getChatId());
-        }
+            } catch (Exception ignored) {}
+
+            workingApiService.getAnswer(q.getQuestionText()).subscribe(answer -> {
+                try {
+                    String formattedAnswer = "🤖 **Ответ:**\n\n" + answer;
+                    execSend(cq.getMessage().getChatId(), formattedAnswer);
+
+                    showContinueOptions(cq.getMessage().getChatId());
+                } catch (Exception ignored) {}
+            });
+        });
     }
 
     private void handleTestResponse(CallbackQuery cq, boolean acceptTest) {
@@ -419,7 +426,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
         var questionBtn = InlineKeyboardButton.builder()
-                .text("🎲 Случайный вопрос")
+                .text("🎲 Начать сессию вопросов")
                 .callbackData("RANDOM_QUESTION")
                 .build();
 
@@ -428,8 +435,14 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 .callbackData("ADD_QUESTION")
                 .build();
 
+        var settingsBtn = InlineKeyboardButton.builder()
+                .text("⚙️ Настройки")
+                .callbackData("SETTINGS_MENU")
+                .build();
+
         rows.add(List.of(questionBtn));
         rows.add(List.of(addQuestionBtn));
+        rows.add(List.of(settingsBtn));
         keyboard.setKeyboard(rows);
 
         execSend(chatId,
@@ -439,4 +452,208 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         );
     }
 
+    private void startQuestionSession(Long chatId, BotUser user) {
+        int questionsCount = user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : 20;
+
+        // Проверяем, есть ли достаточное количество вопросов в базе
+        var availableQuestions = questionService.getRandomQuestions(1);
+        if (availableQuestions.isEmpty()) {
+            execSend(chatId, "❌ В базе нет вопросов. Сначала добавьте вопросы с помощью /add_question");
+            return;
+        }
+
+        questionCacheService.initializeUserCache(chatId, questionsCount);
+
+        // Проверяем, что кэш инициализирован корректно
+        if (questionCacheService.getUserCache(chatId) == null ||
+                questionCacheService.getUserCache(chatId).getQuestions().isEmpty()) {
+            execSend(chatId, "❌ Не удалось загрузить вопросы. Попробуйте позже или уменьшите количество вопросов в настройках.");
+            return;
+        }
+
+        sendNextQuestion(chatId, true);
+    }
+
+    private void sendNextQuestion(Long chatId, boolean isFirstQuestion) {
+        Question question = questionCacheService.getCurrentQuestion(chatId);
+
+        if (question == null) {
+            execSend(chatId, "❌ Не удалось получить вопрос. Попробуйте снова.");
+            questionCacheService.clearUserCache(chatId);
+            return;
+        }
+
+        var kb = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        var answerBtn = InlineKeyboardButton.builder()
+                .text("Показать ответ")
+                .callbackData("ANS:" + question.getId())
+                .build();
+        rows.add(List.of(answerBtn));
+        kb.setKeyboard(rows);
+
+        String message = isFirstQuestion ?
+                "🎯 **Начинаем сессию вопросов!**\n\n" +
+                        "❓ **Вопрос " + (questionCacheService.getUserCache(chatId).getCurrentIndex() + 1) + ":**\n\n" +
+                        question.getQuestionText() :
+                "❓ **Вопрос " + (questionCacheService.getUserCache(chatId).getCurrentIndex() + 1) + ":**\n\n" +
+                        question.getQuestionText();
+
+        execSend(chatId, message, kb);
+    }
+
+    private void showContinueOptions(Long chatId) {
+        var kb = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        if (questionCacheService.hasNextQuestion(chatId)) {
+            var nextBtn = InlineKeyboardButton.builder()
+                    .text("✅ Следующий вопрос")
+                    .callbackData("NEXT_QUESTION")
+                    .build();
+            rows.add(List.of(nextBtn));
+        }
+
+        var stopBtn = InlineKeyboardButton.builder()
+                .text("❌ Завершить")
+                .callbackData("STOP_QUESTIONS")
+                .build();
+        rows.add(List.of(stopBtn));
+
+        kb.setKeyboard(rows);
+
+        String message = questionCacheService.hasNextQuestion(chatId) ?
+                "**Что делаем дальше?**" :
+                "🎉 **Вы ответили на все вопросы в этой сессии!**";
+
+        execSend(chatId, message, kb);
+    }
+
+    private void handleNextQuestion(Long chatId) {
+        Question nextQuestion = questionCacheService.getNextQuestion(chatId);
+        if (nextQuestion != null) {
+            sendNextQuestion(chatId, false);
+        } else {
+            execSend(chatId, "🎉 **Вы ответили на все вопросы в этой сессии!**");
+            questionCacheService.clearUserCache(chatId);
+        }
+    }
+
+    private void handleStopQuestions(Long chatId) {
+        questionCacheService.clearUserCache(chatId);
+        execSend(chatId, "🏁 **Сессия вопросов завершена.**\n\n" +
+                "Чтобы начать новую сессию, используйте /question или главное меню.");
+    }
+
+    private void showSettingsMenu(Long chatId, BotUser user) {
+        var keyboard = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        var timeBtn = InlineKeyboardButton.builder()
+                .text("🕐 Изменить время рассылки")
+                .callbackData("SETTINGS_TIME")
+                .build();
+
+        var countBtn = InlineKeyboardButton.builder()
+                .text("📊 Изменить количество вопросов")
+                .callbackData("SETTINGS_COUNT")
+                .build();
+
+        var backBtn = InlineKeyboardButton.builder()
+                .text("🔙 Назад")
+                .callbackData("BACK_TO_MENU")
+                .build();
+
+        rows.add(List.of(timeBtn));
+        rows.add(List.of(countBtn));
+        rows.add(List.of(backBtn));
+        keyboard.setKeyboard(rows);
+
+        String currentSettings = "⚙️ **Текущие настройки:**\n\n" +
+                "🕐 Время рассылки: " + user.getScheduleTime() + "\n" +
+                "📊 Вопросов в сессии: " + (user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : 20);
+
+        execSend(chatId, currentSettings + "\n\nВыберите, что хотите изменить:", keyboard);
+    }
+
+    // Обработка изменения времени
+    private void handleSettingsTime(Long chatId) {
+        registrationService.updateUserState(chatId, RegistrationState.SCHEDULE_TIME);
+        execSend(chatId, "🕐 Введите новое время для ежедневной рассылки в формате HH:mm (например, 14:00):");
+    }
+
+    private void handleSettingsCount(Long chatId) {
+        registrationService.startQuestionsCountSetting(chatId);
+        execSend(chatId, "📊 Введите новое количество вопросов для сессии (от 1 до 50):");
+    }
+
+    private boolean handleSettings(Long chatId, String text, BotUser user) {
+        // Проверяем, находится ли пользователь в состоянии настройки количества вопросов
+        if (registrationService.isInSettingsState(chatId, SettingsState.AWAITING_QUESTIONS_COUNT)) {
+            try {
+                registrationService.updateQuestionsPerSession(chatId, text);
+                execSend(chatId, "✅ Количество вопросов в сессии изменено на: " + text);
+                showSettingsMenu(chatId, user);
+                return true;
+            } catch (IllegalArgumentException e) {
+                execSend(chatId, "❌ " + e.getMessage() + "\n\nПожалуйста, введите число от 1 до 50:");
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    private void handleRandomQuestion(CallbackQuery cq) {
+        try {
+            execute(AnswerCallbackQuery.builder()
+                    .callbackQueryId(cq.getId())
+                    .text("Начинаем сессию вопросов...")
+                    .build());
+        } catch (Exception ignored) {
+        }
+
+        var chatId = cq.getMessage().getChatId();
+        Optional<BotUser> userOpt = registrationService.getUserByChatId(chatId);
+
+        if (userOpt.isPresent()) {
+            BotUser user = userOpt.get();
+            startQuestionSession(chatId, user);
+        } else {
+            execSend(chatId, "❌ Сначала зарегистрируйтесь с помощью /start");
+        }
+    }
+
+    private void handleAddQuestion(CallbackQuery cq) {
+        try {
+            execute(AnswerCallbackQuery.builder()
+                    .callbackQueryId(cq.getId())
+                    .text("Переходим к добавлению вопроса...")
+                    .build());
+        } catch (Exception ignored) {
+        }
+
+        startAddingQuestion(cq.getMessage().getChatId());
+    }
+
+    private void handleSettingsMenu(CallbackQuery cq) {
+        var chatId = cq.getMessage().getChatId();
+        Optional<BotUser> userOpt = registrationService.getUserByChatId(chatId);
+
+        if (userOpt.isPresent()) {
+            try {
+                execute(AnswerCallbackQuery.builder()
+                        .callbackQueryId(cq.getId())
+                        .text("Открываем настройки...")
+                        .build());
+            } catch (Exception ignored) {
+            }
+            showSettingsMenu(chatId, userOpt.get());
+        }
+    }
+
+    private void handleBackToMenu(Long chatId) {
+        showMainMenu(chatId);
+    }
 }

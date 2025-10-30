@@ -1,0 +1,14 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-add-questions-per-session
+      author: puhlikov
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: questions_per_session
+                  type: integer
+                  defaultValue: 20
+                  constraints:
+                    nullable: true

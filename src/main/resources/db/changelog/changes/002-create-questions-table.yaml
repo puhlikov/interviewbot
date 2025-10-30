@@ -1,0 +1,64 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-create-questions-table
+      author: puhlikov
+      changes:
+        - createTable:
+            schemaName: public
+            tableName: questions
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: question_text
+                  type: text
+                  constraints:
+                    nullable: false
+              - column:
+                  name: category
+                  type: varchar(255)
+              - column:
+                  name: difficulty_level
+                  type: varchar(100)
+              - column:
+                  name: is_active
+                  type: boolean
+                  defaultValue: true
+              - column:
+                  name: created_at
+                  type: timestamp
+                  constraints:
+                    nullable: false
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            schemaName: public
+            tableName: questions
+            indexName: idx_questions_category
+            columns:
+              - column:
+                  name: category
+                  type: varchar(255)
+
+        - createIndex:
+            schemaName: public
+            tableName: questions
+            indexName: idx_questions_difficulty
+            columns:
+              - column:
+                  name: difficulty_level
+                  type: varchar(100)
+
+        - createIndex:
+            schemaName: public
+            tableName: questions
+            indexName: idx_questions_active
+            columns:
+              - column:
+                  name: is_active
+                  type: boolean

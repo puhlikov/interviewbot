@@ -23,6 +23,10 @@ public class QuestionService {
 	public Optional<Question> getById(Long id) {
 		return repository.findById(id);
 	}
+
+	public void save(Question question) {
+		repository.save(question);
+	}
 }
 
 

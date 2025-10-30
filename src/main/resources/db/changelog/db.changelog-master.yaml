@@ -1,0 +1,14 @@
+databaseChangeLog:
+  - changeSet:
+      id: 000-initial-schema
+      author: puhlikov
+      changes:
+        - sql:
+            sql: CREATE SCHEMA IF NOT EXISTS public
+
+  - include:
+      file: db/changelog/changes/001-create-users-table.yaml
+  - include:
+      file: db/changelog/changes/002-create-questions-table.yaml
+  - include:
+      file: db/changelog/changes/003-add-questions-per-session.yaml

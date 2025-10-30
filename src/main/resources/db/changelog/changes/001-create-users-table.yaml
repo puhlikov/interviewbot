@@ -1,0 +1,65 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-create-users-table
+      author: puhlikov
+      changes:
+        - createTable:
+            schemaName: public
+            tableName: users
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: chat_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: username
+                  type: varchar(255)
+              - column:
+                  name: first_name
+                  type: varchar(255)
+              - column:
+                  name: last_name
+                  type: varchar(255)
+              - column:
+                  name: schedule_time
+                  type: time
+              - column:
+                  name: timezone
+                  type: varchar(255)
+                  defaultValue: "Europe/Moscow"
+              - column:
+                  name: registration_state
+                  type: varchar(50)
+                  defaultValue: "START"
+              - column:
+                  name: created_at
+                  type: timestamp
+                  constraints:
+                    nullable: false
+                  defaultValueComputed: "CURRENT_TIMESTAMP"
+
+        - createIndex:
+            schemaName: public
+            tableName: users
+            indexName: idx_users_chat_id
+            columns:
+              - column:
+                  name: chat_id
+
+        - createIndex:
+            schemaName: public
+            tableName: users
+            indexName: idx_users_registration_state
+            columns:
+              - column:
+                  name: registration_state
+                  type: varchar(50)

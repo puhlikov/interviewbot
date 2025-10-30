@@ -1,78 +1,61 @@
 package com.github.puhlikov.interviewbot.model;
 
-import jakarta.persistence.*;
+import com.github.puhlikov.interviewbot.enums.RegistrationState;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import lombok.Setter;
+import lombok.ToString;
+
 import java.time.Instant;
+import java.time.LocalTime;
 
 @Entity
+@Getter
+@Setter
+@ToString
+@RequiredArgsConstructor
+@AllArgsConstructor
 @Table(name = "users")
 public class BotUser {
 
-	@Id
-	@GeneratedValue(strategy = GenerationType.IDENTITY)
-	private Long id;
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-	@Column(name = "chat_id", nullable = false, unique = true)
-	private Long chatId;
+    @Column(name = "chat_id", nullable = false, unique = true)
+    private Long chatId;
 
-	@Column(name = "username")
-	private String username;
+    @Column(name = "username")
+    private String username;
 
-	@Column(name = "first_name")
-	private String firstName;
+    @Column(name = "first_name")
+    private String firstName;
 
-	@Column(name = "last_name")
-	private String lastName;
+    @Column(name = "last_name")
+    private String lastName;
 
-	@Column(name = "created_at", nullable = false)
-	private Instant createdAt = Instant.now();
+    @Column(name = "schedule_time")
+    private LocalTime scheduleTime;
 
-	public Long getId() {
-		return id;
-	}
+    @Column(name = "timezone")
+    private String timezone = "Europe/Moscow";
 
-	public void setId(Long id) {
-		this.id = id;
-	}
+    @Enumerated(EnumType.STRING)
+    @Column(name = "registration_state")
+    private RegistrationState registrationState = RegistrationState.START;
 
-	public Long getChatId() {
-		return chatId;
-	}
+    @Column(name = "created_at", nullable = false)
+    private Instant createdAt = Instant.now();
 
-	public void setChatId(Long chatId) {
-		this.chatId = chatId;
-	}
-
-	public String getUsername() {
-		return username;
-	}
-
-	public void setUsername(String username) {
-		this.username = username;
-	}
-
-	public String getFirstName() {
-		return firstName;
-	}
-
-	public void setFirstName(String firstName) {
-		this.firstName = firstName;
-	}
-
-	public String getLastName() {
-		return lastName;
-	}
-
-	public void setLastName(String lastName) {
-		this.lastName = lastName;
-	}
-
-	public Instant getCreatedAt() {
-		return createdAt;
-	}
-
-	public void setCreatedAt(Instant createdAt) {
-		this.createdAt = createdAt;
-	}
+    @Column(name = "questions_per_session")
+    private Integer questionsPerSession = 20;
 }
-
-

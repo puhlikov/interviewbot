@@ -83,11 +83,11 @@ public final class KeyboardBuilder {
             rows.add(List.of(nextBtn));
         }
         
-        var stopBtn = InlineKeyboardButton.builder()
-                .text(ButtonText.STOP_QUESTIONS)
-                .callbackData(CallbackData.STOP_QUESTIONS)
+        var exitBtn = InlineKeyboardButton.builder()
+                .text(ButtonText.EXIT_SESSION)
+                .callbackData(CallbackData.EXIT_SESSION)
                 .build();
-        rows.add(List.of(stopBtn));
+        rows.add(List.of(exitBtn));
         
         keyboard.setKeyboard(rows);
         return keyboard;
@@ -152,12 +152,17 @@ public final class KeyboardBuilder {
         InlineKeyboardMarkup keyboard = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         
-        var addQuestionBtn = InlineKeyboardButton.builder()
-                .text(ButtonText.ADD_QUESTION)
-                .callbackData(CallbackData.ADD_QUESTION)
+        var startSessionBtn = InlineKeyboardButton.builder()
+                .text(ButtonText.START_SESSION)
+                .callbackData(CallbackData.RANDOM_QUESTION)
                 .build();
         
-        rows.add(List.of(addQuestionBtn));
+        var settingsBtn = InlineKeyboardButton.builder()
+                .text(ButtonText.SETTINGS)
+                .callbackData(CallbackData.SETTINGS_MENU)
+                .build();
+        
+        rows.add(List.of(startSessionBtn, settingsBtn));
         keyboard.setKeyboard(rows);
         
         return keyboard;
@@ -180,6 +185,11 @@ public final class KeyboardBuilder {
                 .callbackData(CallbackData.SETTINGS_COUNT)
                 .build();
         
+        var addQuestionBtn = InlineKeyboardButton.builder()
+                .text(ButtonText.ADD_QUESTION)
+                .callbackData(CallbackData.ADD_QUESTION)
+                .build();
+        
         var backBtn = InlineKeyboardButton.builder()
                 .text(ButtonText.BACK)
                 .callbackData(CallbackData.BACK_TO_MENU)
@@ -187,6 +197,7 @@ public final class KeyboardBuilder {
         
         rows.add(List.of(timeBtn));
         rows.add(List.of(countBtn));
+        rows.add(List.of(addQuestionBtn));
         rows.add(List.of(backBtn));
         keyboard.setKeyboard(rows);
         

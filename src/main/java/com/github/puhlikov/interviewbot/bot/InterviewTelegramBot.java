@@ -108,12 +108,15 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
             return;
         }
 
-        // Если пользователь в сессии вопросов и отправил произвольный текст —
-        // отправляем его на проверку в WorkingApiService с префиксом
-        if (questionCacheService.getUserCache(chatId) != null && !text.startsWith("/")) {
+        // Если пользователь в сессии вопросов и нажал "Ответить" — отправляем текст на проверку
+        if (questionCacheService.getUserCache(chatId) != null && 
+            awaitingText.contains(chatId) && 
+            !text.startsWith("/")) {
+            awaitingText.remove(chatId); // Удаляем из ожидающих, чтобы не обработать повторно
             String prompt = Messages.gptVerificationPrompt(text);
             workingApiService.getAnswer(prompt).subscribe(gptResult -> {
                 execSend(chatId, "🤖 " + gptResult);
+                showContinueOptions(chatId); // Добавляем кнопки для продолжения
             });
             return;
         }

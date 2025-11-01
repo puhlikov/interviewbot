@@ -1,17 +1,19 @@
 package com.github.puhlikov.interviewbot.bot;
 
+import com.github.puhlikov.interviewbot.bot.constants.ButtonText;
+import com.github.puhlikov.interviewbot.bot.constants.CallbackData;
+import com.github.puhlikov.interviewbot.bot.constants.Messages;
+import com.github.puhlikov.interviewbot.bot.util.KeyboardBuilder;
 import com.github.puhlikov.interviewbot.enums.QuestionState;
 import com.github.puhlikov.interviewbot.enums.RegistrationState;
 import com.github.puhlikov.interviewbot.enums.SettingsState;
 import com.github.puhlikov.interviewbot.model.BotUser;
 import com.github.puhlikov.interviewbot.model.Question;
-import com.github.puhlikov.interviewbot.repo.BotUserRepository;
 import com.github.puhlikov.interviewbot.service.QuestionCacheService;
 import com.github.puhlikov.interviewbot.service.QuestionService;
 import com.github.puhlikov.interviewbot.service.QuestionSessionService;
 import com.github.puhlikov.interviewbot.service.RegistrationService;
 import com.github.puhlikov.interviewbot.service.WorkingApiService;
-// voice-to-text removed
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
@@ -19,15 +21,9 @@ import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.Update;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,10 +31,10 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class InterviewTelegramBot extends TelegramLongPollingBot {
 
+    private static final int DEFAULT_QUESTIONS_PER_SESSION = 20;
+    
     private final String username;
-    private final BotUserRepository users;
     private final QuestionService questions;
-//    private final DeepSeekService deepseek;
     private final RegistrationService registrationService;
     private final QuestionSessionService questionSessionService;
     private final QuestionService questionService;
@@ -49,9 +45,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     public InterviewTelegramBot(
             @Value("${telegram.bot.username}") String username,
             @Value("${telegram.bot.token}") String token,
-            BotUserRepository users,
             QuestionService questions,
-//            DeepSeekService deepseek,
             RegistrationService registrationService,
             QuestionSessionService questionSessionService,
             QuestionService questionService,
@@ -60,9 +54,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     ) {
         super(token);
         this.username = username;
-        this.users = users;
         this.questions = questions;
-//        this.deepseek = deepseek;
         this.registrationService = registrationService;
         this.questionSessionService = questionSessionService;
         this.questionService = questionService;
@@ -99,7 +91,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
             if ("/start".equalsIgnoreCase(text)) {
                 startRegistration(chatId);
             } else {
-                execSend(chatId, "Для начала работы отправьте /start");
+                execSend(chatId, Messages.START_COMMAND_REQUIRED);
             }
             return;
         }
@@ -119,10 +111,9 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         // Если пользователь в сессии вопросов и отправил произвольный текст —
         // отправляем его на проверку в WorkingApiService с префиксом
         if (questionCacheService.getUserCache(chatId) != null && !text.startsWith("/")) {
-            String prompt = "Верно ли утверждение: \"" + text + "\"? Ответь кратко: верно/неверно и короткое пояснение.";
+            String prompt = Messages.gptVerificationPrompt(text);
             workingApiService.getAnswer(prompt).subscribe(gptResult -> {
                 execSend(chatId, "🤖 " + gptResult);
-                // без возврата в меню
             });
             return;
         }
@@ -136,45 +127,43 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
     private void startRegistration(Long chatId) {
         registrationService.startRegistration(chatId);
-        execSend(chatId, "Добро пожаловать! Давайте зарегистрируем вас в системе.\n\nВведите ваше имя:");
+        execSend(chatId, Messages.WELCOME);
     }
 
     private void handleRegistrationStep(Long chatId, String text, BotUser user) {
         switch (user.getRegistrationState()) {
+            case START:
             case FIRST_NAME:
                 registrationService.updateFirstName(chatId, text);
-                execSend(chatId, "Отлично! Теперь введите вашу фамилию:");
+                execSend(chatId, Messages.ENTER_FIRST_NAME);
                 break;
 
             case LAST_NAME:
                 registrationService.updateLastName(chatId, text);
-                execSend(chatId, "Хорошо! Теперь введите ваш username (без @):");
+                execSend(chatId, Messages.ENTER_LAST_NAME);
                 break;
 
             case USERNAME:
                 registrationService.updateUsername(chatId, text);
-                execSend(chatId, "Отлично! Теперь введите время для ежедневной рассылки в формате HH:mm (например, 14:00):");
+                execSend(chatId, Messages.ENTER_USERNAME);
                 break;
 
             case SCHEDULE_TIME:
                 try {
                     registrationService.updateScheduleTime(chatId, text);
                     var keyboard = registrationService.getTimezoneKeyboard();
-                    execSend(chatId, "Прекрасно! Теперь выберите ваш часовой пояс:", keyboard);
+                    execSend(chatId, Messages.ENTER_TIME, keyboard);
                 } catch (IllegalArgumentException e) {
-                    execSend(chatId, "Неверный формат времени. Пожалуйста, введите время в формате HH:mm (например, 14:00):");
+                    execSend(chatId, Messages.INVALID_TIME_FORMAT);
                 }
                 break;
 
             case TIMEZONE:
                 registrationService.updateTimezone(chatId, text);
+                int questionsPerSession = user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : DEFAULT_QUESTIONS_PER_SESSION;
                 execSend(chatId,
-                        "🎉 Регистрация завершена! 🎉\n\n" +
-                                "Теперь вы будете получать ежедневные уведомления в " +
-                                user.getScheduleTime() + " по времени " + text + "\n\n" +
-                                "Количество вопросов в сессии: " + (user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : 20) + "\n\n" +
-                                "Используйте кнопки ниже для быстрого доступа к функциям бота.",
-                        getMainReplyKeyboard()
+                        Messages.registrationComplete(user.getScheduleTime().toString(), text, questionsPerSession),
+                        KeyboardBuilder.createMainReplyKeyboard()
                 );
                 break;
 
@@ -186,9 +175,9 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
     private void handleCompletedUser(Long chatId, String text, BotUser user) {
         // Обработка постоянных кнопок
-        if ("🎲 Начать сессию вопросов".equals(text) || "/question".equalsIgnoreCase(text)) {
+        if (ButtonText.START_SESSION.equals(text) || "/question".equalsIgnoreCase(text)) {
             startQuestionSession(chatId, user);
-        } else if ("⚙️ Настройки".equals(text) || "/settings".equalsIgnoreCase(text)) {
+        } else if (ButtonText.SETTINGS.equals(text) || "/settings".equalsIgnoreCase(text)) {
             showSettingsMenu(chatId, user);
         } else if ("/add_question".equalsIgnoreCase(text)) {
             startAddingQuestion(chatId);
@@ -200,143 +189,80 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     }
 
     private void sendQuestion(Long chatId) {
-        List<Question> questionList = questions.getRandomQuestions(1);
+        var questionList = questions.getRandomQuestions(1);
         if (questionList.isEmpty()) {
-            execSend(chatId, "В базе нет вопросов.");
+            execSend(chatId, Messages.NO_QUESTIONS_IN_DB);
             return;
         }
 
         Question question = questionList.get(0);
-        var kb = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        var btn = InlineKeyboardButton.builder()
-                .text("Показать ответ")
-                .callbackData("ANS:" + question.getId())
-                .build();
-        var replyBtn = InlineKeyboardButton.builder()
-                .text("Ответить")
-                .callbackData("REPLY:" + question.getId())
-                .build();
-        rows.add(List.of(btn, replyBtn));
-        kb.setKeyboard(rows);
-        execSend(chatId, "❓ Вопрос:\n\n" + question.getQuestionText(), kb);
+        var keyboard = KeyboardBuilder.createSimpleQuestionKeyboard(question.getId());
+        execSend(chatId, Messages.QUESTION_PREFIX + question.getQuestionText(), keyboard);
     }
 
     private void handleCallback(CallbackQuery cq) {
         var data = cq.getData();
         var chatId = cq.getMessage().getChatId();
 
-        if (data != null && data.startsWith("ANS:")) {
-            handleAnswerCallback(cq, data.substring(4));
-        } else if (data != null && data.startsWith("REPLY:")) {
+        if (data == null) {
+            return;
+        }
+
+        if (data.startsWith(CallbackData.ANSWER_PREFIX)) {
+            handleAnswerCallback(cq, data.substring(CallbackData.ANSWER_PREFIX.length()));
+        } else if (data.startsWith(CallbackData.REPLY_PREFIX)) {
             awaitingText.add(chatId);
-            try {
-                execute(AnswerCallbackQuery.builder()
-                        .callbackQueryId(cq.getId())
-                        .text("Ожидаю ваш текстовый ответ…")
-                        .build());
-            } catch (Exception ignored) {}
-            execSend(chatId, "✍️ Ответьте на вопрос и отправьте одним сообщением.");
-        } else if (data != null && data.equals("YES_TEST")) {
-            handleTestResponse(cq, true);
-        } else if (data != null && data.equals("NO_TEST")) {
-            handleTestResponse(cq, false);
-        } else if (data != null && data.startsWith("DIFF_")) {
-            handleDifficultySelection(cq, data.substring(5));
-        } else if (data != null && data.equals("RANDOM_QUESTION")) {
-            handleRandomQuestion(cq);
-        } else if (data != null && data.equals("ADD_QUESTION")) {
-            handleAddQuestion(cq);
-        } else if (data != null && data.equals("NEXT_QUESTION")) {
-            handleNextQuestion(chatId);
-        } else if (data != null && data.equals("STOP_QUESTIONS")) {
-            handleStopQuestions(chatId);
-        } else if (data != null && data.equals("EXIT_SESSION")) {
-            handleStopQuestions(chatId);
-        } else if (data != null && data.equals("SETTINGS_TIME")) {
-            handleSettingsTime(chatId);
-        } else if (data != null && data.equals("SETTINGS_COUNT")) {
-            handleSettingsCount(chatId);
-        } else if (data != null && data.equals("SETTINGS_MENU")) {
-            handleSettingsMenu(cq);
-        } else if (data != null && data.equals("BACK_TO_MENU")) {
-            handleBackToMenu(chatId);
+            answerCallback(cq, Messages.WAITING_TEXT_RESPONSE);
+            execSend(chatId, Messages.WAITING_FOR_TEXT_ANSWER);
+        } else if (data.startsWith(CallbackData.DIFFICULTY_PREFIX)) {
+            handleDifficultySelection(cq, data.substring(CallbackData.DIFFICULTY_PREFIX.length()));
+        } else {
+            switch (data) {
+                case CallbackData.YES_TEST -> handleTestResponse(cq, true);
+                case CallbackData.NO_TEST -> handleTestResponse(cq, false);
+                case CallbackData.RANDOM_QUESTION -> handleRandomQuestion(cq);
+                case CallbackData.ADD_QUESTION -> handleAddQuestion(cq);
+                case CallbackData.NEXT_QUESTION -> handleNextQuestion(chatId);
+                case CallbackData.STOP_QUESTIONS, CallbackData.EXIT_SESSION -> handleStopQuestions(chatId);
+                case CallbackData.SETTINGS_TIME -> handleSettingsTime(chatId);
+                case CallbackData.SETTINGS_COUNT -> handleSettingsCount(chatId);
+                case CallbackData.SETTINGS_MENU -> handleSettingsMenu(cq);
+                case CallbackData.BACK_TO_MENU -> handleBackToMenu(chatId);
+            }
         }
     }
 
     private void handleAnswerCallback(CallbackQuery cq, String questionId) {
-        var qid = Long.parseLong(questionId);
-        questions.getById(qid).ifPresent(q -> {
-            try {
-                execute(AnswerCallbackQuery.builder()
-                        .callbackQueryId(cq.getId())
-                        .text("Генерируем ответ...")
-                        .build());
-            } catch (Exception ignored) {}
-
-            workingApiService.getAnswer(q.getQuestionText()).subscribe(answer -> {
-                try {
-                    String formattedAnswer = "🤖 **Ответ:**\n\n" + answer;
-                    execSend(cq.getMessage().getChatId(), formattedAnswer);
-
+        try {
+            var qid = Long.parseLong(questionId);
+            questions.getById(qid).ifPresent(q -> {
+                answerCallback(cq, Messages.GENERATING_ANSWER);
+                workingApiService.getAnswer(q.getQuestionText()).subscribe(answer -> {
+                    execSend(cq.getMessage().getChatId(), Messages.formattedAnswer(answer));
                     showContinueOptions(cq.getMessage().getChatId());
-                } catch (Exception ignored) {}
+                });
             });
-        });
+        } catch (NumberFormatException e) {
+            // Invalid question ID
+        }
     }
 
     private void handleTestResponse(CallbackQuery cq, boolean acceptTest) {
-        try {
-            if (acceptTest) {
-                execute(AnswerCallbackQuery.builder()
-                        .callbackQueryId(cq.getId())
-                        .text("Начинаем тест!")
-                        .build());
-                sendQuestion(cq.getMessage().getChatId());
-            } else {
-                execute(AnswerCallbackQuery.builder()
-                        .callbackQueryId(cq.getId())
-                        .text("Хорошо, в другой раз!")
-                        .build());
-            }
-        } catch (Exception ignored) {
+        if (acceptTest) {
+            answerCallback(cq, Messages.STARTING_TEST);
+            sendQuestion(cq.getMessage().getChatId());
+        } else {
+            answerCallback(cq, Messages.DECLINED_TEST);
         }
     }
 
     public void sendDailyNotification(Long chatId) {
-        var kb = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-
-        var yesBtn = InlineKeyboardButton.builder()
-                .text("✅ Да")
-                .callbackData("YES_TEST")
-                .build();
-
-        var noBtn = InlineKeyboardButton.builder()
-                .text("❌ Нет")
-                .callbackData("NO_TEST")
-                .build();
-
-        rows.add(List.of(yesBtn, noBtn));
-        kb.setKeyboard(rows);
-
-        execSend(chatId, "🕐 Время для ежедневного теста!\n\nХотите пройти тест сегодня?", kb);
+        var keyboard = KeyboardBuilder.createDailyNotificationKeyboard();
+        execSend(chatId, Messages.DAILY_TEST_PROMPT, keyboard);
     }
 
     private ReplyKeyboardMarkup getMainReplyKeyboard() {
-        ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
-        keyboard.setResizeKeyboard(true);
-        keyboard.setOneTimeKeyboard(false);
-        keyboard.setSelective(true);
-
-        List<KeyboardRow> rows = new ArrayList<>();
-        KeyboardRow row = new KeyboardRow();
-        row.add(new KeyboardButton("🎲 Начать сессию вопросов"));
-        row.add(new KeyboardButton("⚙️ Настройки"));
-        rows.add(row);
-        keyboard.setKeyboard(rows);
-
-        return keyboard;
+        return KeyboardBuilder.createMainReplyKeyboard();
     }
 
     private void execSend(Long chatId, String text) {
@@ -383,47 +309,20 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
     private void startAddingQuestion(Long chatId) {
         questionSessionService.startSession(chatId);
-        execSend(chatId,
-                "📝 **Добавление нового вопроса**\n\n" +
-                        "Пожалуйста, введите текст вопроса:"
-        );
+        execSend(chatId, Messages.ADDING_QUESTION);
     }
 
     private void handleAwaitingQuestionText(Long chatId, String text) {
         questionSessionService.setQuestionText(chatId, text);
         questionSessionService.updateState(chatId, QuestionState.AWAITING_QUESTION_CATEGORY);
-        execSend(chatId, "📚 Теперь введите категорию вопроса (например: Java, SQL, Algorithms):");
+        execSend(chatId, Messages.ENTER_CATEGORY);
     }
 
     private void handleAwaitingQuestionCategory(Long chatId, String text) {
         questionSessionService.setCategory(chatId, text);
         questionSessionService.updateState(chatId, QuestionState.AWAITING_QUESTION_DIFFICULTY);
-
-
-        var keyboard = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-
-        var juniorBtn = InlineKeyboardButton.builder()
-                .text("👶 Junior")
-                .callbackData("DIFF_JUNIOR")
-                .build();
-
-        var middleBtn = InlineKeyboardButton.builder()
-                .text("💼 Middle")
-                .callbackData("DIFF_MIDDLE")
-                .build();
-
-        var seniorBtn = InlineKeyboardButton.builder()
-                .text("🎯 Senior")
-                .callbackData("DIFF_SENIOR")
-                .build();
-
-        rows.add(List.of(juniorBtn, middleBtn));
-        rows.add(List.of(seniorBtn));
-
-        keyboard.setKeyboard(rows);
-
-        execSend(chatId, "🎯 Выберите уровень сложности:", keyboard);
+        var keyboard = KeyboardBuilder.createDifficultyKeyboard();
+        execSend(chatId, Messages.SELECT_DIFFICULTY, keyboard);
     }
 
     private void handleDifficultySelection(CallbackQuery cq, String difficulty) {
@@ -449,53 +348,34 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
                 questionSessionService.completeSession(chatId);
 
-                execSend(chatId,
-                        "✅ **Вопрос успешно добавлен!**\n\n" +
-                                "📖 Текст: " + question.getQuestionText() + "\n" +
-                                "📚 Категория: " + question.getCategory() + "\n" +
-                                "🎯 Сложность: " + question.getDifficultyLevel() + "\n\n" +
-                                "Вопрос теперь доступен в базе для всех пользователей."
-                );
+                execSend(chatId, Messages.questionAdded(
+                        question.getQuestionText(),
+                        question.getCategory(),
+                        question.getDifficultyLevel()
+                ));
 
-                execute(AnswerCallbackQuery.builder()
-                        .callbackQueryId(cq.getId())
-                        .text("Сложность выбрана: " + difficultyText)
-                        .build());
+                answerCallback(cq, "Сложность выбрана: " + difficultyText);
             }
         } catch (Exception e) {
             e.printStackTrace();
-            execSend(cq.getMessage().getChatId(), "❌ Произошла ошибка при сохранении вопроса. Пожалуйста, попробуйте снова.");
+            execSend(cq.getMessage().getChatId(), Messages.ERROR_SAVING_QUESTION);
             questionSessionService.completeSession(cq.getMessage().getChatId());
         }
     }
 
     private void showMainMenu(Long chatId) {
-        var keyboard = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-
-        var addQuestionBtn = InlineKeyboardButton.builder()
-                .text("➕ Добавить вопрос")
-                .callbackData("ADD_QUESTION")
-                .build();
-
-        rows.add(List.of(addQuestionBtn));
-        keyboard.setKeyboard(rows);
-
-        execSend(chatId,
-                "📋 **Главное меню**\n\n" +
-                        "Выберите действие:",
-                keyboard
-        );
-        execSend(chatId, "💡 Также можете использовать постоянные кнопки ниже для быстрого доступа:", getMainReplyKeyboard());
+        var keyboard = KeyboardBuilder.createMainMenuKeyboard();
+        execSend(chatId, Messages.MAIN_MENU_TITLE, keyboard);
+        execSend(chatId, Messages.USE_PERSISTENT_BUTTONS, KeyboardBuilder.createMainReplyKeyboard());
     }
 
     private void startQuestionSession(Long chatId, BotUser user) {
-        int questionsCount = user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : 20;
+        int questionsCount = user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : DEFAULT_QUESTIONS_PER_SESSION;
 
         // Проверяем, есть ли достаточное количество вопросов в базе
         var availableQuestions = questionService.getRandomQuestions(1);
         if (availableQuestions.isEmpty()) {
-            execSend(chatId, "❌ В базе нет вопросов. Сначала добавьте вопросы с помощью /add_question");
+            execSend(chatId, Messages.NO_QUESTIONS_FOR_SESSION);
             return;
         }
 
@@ -504,7 +384,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         // Проверяем, что кэш инициализирован корректно
         if (questionCacheService.getUserCache(chatId) == null ||
                 questionCacheService.getUserCache(chatId).getQuestions().isEmpty()) {
-            execSend(chatId, "❌ Не удалось загрузить вопросы. Попробуйте позже или уменьшите количество вопросов в настройках.");
+            execSend(chatId, Messages.FAILED_TO_LOAD_QUESTIONS);
             return;
         }
 
@@ -515,65 +395,26 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         Question question = questionCacheService.getCurrentQuestion(chatId);
 
         if (question == null) {
-            execSend(chatId, "❌ Не удалось получить вопрос. Попробуйте снова.");
+            execSend(chatId, Messages.FAILED_TO_GET_QUESTION);
             questionCacheService.clearUserCache(chatId);
             return;
         }
 
-        var kb = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-
-        var answerBtn = InlineKeyboardButton.builder()
-                .text("Показать ответ")
-                .callbackData("ANS:" + question.getId())
-                .build();
-        var replyBtn = InlineKeyboardButton.builder()
-                .text("Ответить")
-                .callbackData("REPLY:" + question.getId())
-                .build();
-        var exitBtn = InlineKeyboardButton.builder()
-                .text("❌ Выйти из сессии")
-                .callbackData("EXIT_SESSION")
-                .build();
-        rows.add(List.of(answerBtn, replyBtn));
-        rows.add(List.of(exitBtn));
-        kb.setKeyboard(rows);
-
+        var keyboard = KeyboardBuilder.createQuestionKeyboard(question.getId());
+        int questionNumber = questionCacheService.getUserCache(chatId).getCurrentIndex() + 1;
+        
         String message = isFirstQuestion ?
-                "🎯 **Начинаем сессию вопросов!**\n\n" +
-                        "❓ **Вопрос " + (questionCacheService.getUserCache(chatId).getCurrentIndex() + 1) + ":**\n\n" +
-                        question.getQuestionText() :
-                "❓ **Вопрос " + (questionCacheService.getUserCache(chatId).getCurrentIndex() + 1) + ":**\n\n" +
-                        question.getQuestionText();
+                Messages.QUESTION_SESSION_STARTED + "\n\n" + Messages.questionNumber(questionNumber) + question.getQuestionText() :
+                Messages.questionNumber(questionNumber) + question.getQuestionText();
 
-        execSend(chatId, message, kb);
+        execSend(chatId, message, keyboard);
     }
 
     private void showContinueOptions(Long chatId) {
-        var kb = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-
-        if (questionCacheService.hasNextQuestion(chatId)) {
-            var nextBtn = InlineKeyboardButton.builder()
-                    .text("✅ Следующий вопрос")
-                    .callbackData("NEXT_QUESTION")
-                    .build();
-            rows.add(List.of(nextBtn));
-        }
-
-        var stopBtn = InlineKeyboardButton.builder()
-                .text("❌ Завершить")
-                .callbackData("STOP_QUESTIONS")
-                .build();
-        rows.add(List.of(stopBtn));
-
-        kb.setKeyboard(rows);
-
-        String message = questionCacheService.hasNextQuestion(chatId) ?
-                "**Что делаем дальше?**" :
-                "🎉 **Вы ответили на все вопросы в этой сессии!**";
-
-        execSend(chatId, message, kb);
+        boolean hasNext = questionCacheService.hasNextQuestion(chatId);
+        var keyboard = KeyboardBuilder.createContinueKeyboard(hasNext);
+        String message = hasNext ? Messages.WHAT_NEXT : Messages.SESSION_COMPLETED;
+        execSend(chatId, message, keyboard);
     }
 
     private void handleNextQuestion(Long chatId) {
@@ -581,57 +422,34 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         if (nextQuestion != null) {
             sendNextQuestion(chatId, false);
         } else {
-            execSend(chatId, "🎉 **Вы ответили на все вопросы в этой сессии!**", getMainReplyKeyboard());
+            execSend(chatId, Messages.SESSION_COMPLETED, KeyboardBuilder.createMainReplyKeyboard());
             questionCacheService.clearUserCache(chatId);
         }
     }
 
     private void handleStopQuestions(Long chatId) {
         questionCacheService.clearUserCache(chatId);
-        execSend(chatId, "🏁 **Сессия вопросов завершена.**\n\n" +
-                "Чтобы начать новую сессию, используйте кнопку «🎲 Начать сессию вопросов» или главное меню.", getMainReplyKeyboard());
+        execSend(chatId, Messages.SESSION_STOPPED, KeyboardBuilder.createMainReplyKeyboard());
     }
 
     private void showSettingsMenu(Long chatId, BotUser user) {
-        var keyboard = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-
-        var timeBtn = InlineKeyboardButton.builder()
-                .text("🕐 Изменить время рассылки")
-                .callbackData("SETTINGS_TIME")
-                .build();
-
-        var countBtn = InlineKeyboardButton.builder()
-                .text("📊 Изменить количество вопросов")
-                .callbackData("SETTINGS_COUNT")
-                .build();
-
-        var backBtn = InlineKeyboardButton.builder()
-                .text("🔙 Назад")
-                .callbackData("BACK_TO_MENU")
-                .build();
-
-        rows.add(List.of(timeBtn));
-        rows.add(List.of(countBtn));
-        rows.add(List.of(backBtn));
-        keyboard.setKeyboard(rows);
-
-        String currentSettings = "⚙️ **Текущие настройки:**\n\n" +
-                "🕐 Время рассылки: " + user.getScheduleTime() + "\n" +
-                "📊 Вопросов в сессии: " + (user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : 20);
-
-        execSend(chatId, currentSettings + "\n\nВыберите, что хотите изменить:", keyboard);
+        var keyboard = KeyboardBuilder.createSettingsKeyboard();
+        int questionsPerSession = user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : DEFAULT_QUESTIONS_PER_SESSION;
+        String currentSettings = Messages.currentSettings(
+                user.getScheduleTime().toString(),
+                questionsPerSession
+        );
+        execSend(chatId, currentSettings + "\n\n" + Messages.SELECT_SETTING_TO_CHANGE, keyboard);
     }
 
-    // Обработка изменения времени
     private void handleSettingsTime(Long chatId) {
         registrationService.updateUserState(chatId, RegistrationState.SCHEDULE_TIME);
-        execSend(chatId, "🕐 Введите новое время для ежедневной рассылки в формате HH:mm (например, 14:00):");
+        execSend(chatId, Messages.ENTER_NEW_TIME);
     }
 
     private void handleSettingsCount(Long chatId) {
         registrationService.startQuestionsCountSetting(chatId);
-        execSend(chatId, "📊 Введите новое количество вопросов для сессии (от 1 до 50):");
+        execSend(chatId, Messages.ENTER_QUESTIONS_COUNT);
     }
 
     private boolean handleSettings(Long chatId, String text, BotUser user) {
@@ -639,11 +457,11 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         if (registrationService.isInSettingsState(chatId, SettingsState.AWAITING_QUESTIONS_COUNT)) {
             try {
                 registrationService.updateQuestionsPerSession(chatId, text);
-                execSend(chatId, "✅ Количество вопросов в сессии изменено на: " + text);
+                execSend(chatId, String.format(Messages.QUESTIONS_COUNT_UPDATED, text));
                 showSettingsMenu(chatId, user);
                 return true;
             } catch (IllegalArgumentException e) {
-                execSend(chatId, "❌ " + e.getMessage() + "\n\nПожалуйста, введите число от 1 до 50:");
+                execSend(chatId, String.format(Messages.INVALID_QUESTIONS_COUNT, e.getMessage()));
                 return true;
             }
         }
@@ -652,34 +470,19 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
 
     private void handleRandomQuestion(CallbackQuery cq) {
-        try {
-            execute(AnswerCallbackQuery.builder()
-                    .callbackQueryId(cq.getId())
-                    .text("Начинаем сессию вопросов...")
-                    .build());
-        } catch (Exception ignored) {
-        }
-
+        answerCallback(cq, Messages.STARTING_SESSION);
         var chatId = cq.getMessage().getChatId();
         Optional<BotUser> userOpt = registrationService.getUserByChatId(chatId);
 
         if (userOpt.isPresent()) {
-            BotUser user = userOpt.get();
-            startQuestionSession(chatId, user);
+            startQuestionSession(chatId, userOpt.get());
         } else {
-            execSend(chatId, "❌ Сначала зарегистрируйтесь с помощью /start");
+            execSend(chatId, Messages.USER_NOT_FOUND);
         }
     }
 
     private void handleAddQuestion(CallbackQuery cq) {
-        try {
-            execute(AnswerCallbackQuery.builder()
-                    .callbackQueryId(cq.getId())
-                    .text("Переходим к добавлению вопроса...")
-                    .build());
-        } catch (Exception ignored) {
-        }
-
+        answerCallback(cq, Messages.ADDING_QUESTION_START);
         startAddingQuestion(cq.getMessage().getChatId());
     }
 
@@ -688,14 +491,19 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         Optional<BotUser> userOpt = registrationService.getUserByChatId(chatId);
 
         if (userOpt.isPresent()) {
-            try {
-                execute(AnswerCallbackQuery.builder()
-                        .callbackQueryId(cq.getId())
-                        .text("Открываем настройки...")
-                        .build());
-            } catch (Exception ignored) {
-            }
+            answerCallback(cq, Messages.OPENING_SETTINGS);
             showSettingsMenu(chatId, userOpt.get());
+        }
+    }
+    
+    private void answerCallback(CallbackQuery cq, String text) {
+        try {
+            execute(AnswerCallbackQuery.builder()
+                    .callbackQueryId(cq.getId())
+                    .text(text)
+                    .build());
+        } catch (Exception ignored) {
+            // Ignore callback answer errors
         }
     }
 

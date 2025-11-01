@@ -11,6 +11,7 @@ import com.github.puhlikov.interviewbot.service.QuestionService;
 import com.github.puhlikov.interviewbot.service.QuestionSessionService;
 import com.github.puhlikov.interviewbot.service.RegistrationService;
 import com.github.puhlikov.interviewbot.service.WorkingApiService;
+// voice-to-text removed
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
@@ -20,12 +21,16 @@ import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardRemove;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class InterviewTelegramBot extends TelegramLongPollingBot {
@@ -39,6 +44,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     private final QuestionService questionService;
     private final WorkingApiService workingApiService;
     private final QuestionCacheService questionCacheService;
+    private final Set<Long> awaitingText = ConcurrentHashMap.newKeySet();
 
     public InterviewTelegramBot(
             @Value("${telegram.bot.username}") String username,
@@ -110,6 +116,17 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
             return;
         }
 
+        // Если пользователь в сессии вопросов и отправил произвольный текст —
+        // отправляем его на проверку в WorkingApiService с префиксом
+        if (questionCacheService.getUserCache(chatId) != null && !text.startsWith("/")) {
+            String prompt = "Верно ли утверждение: \"" + text + "\"? Ответь кратко: верно/неверно и короткое пояснение.";
+            workingApiService.getAnswer(prompt).subscribe(gptResult -> {
+                execSend(chatId, "🤖 " + gptResult);
+                // без возврата в меню
+            });
+            return;
+        }
+
         if (user.getRegistrationState() == RegistrationState.COMPLETED) {
             handleCompletedUser(chatId, text, user);
         } else {
@@ -151,14 +168,13 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
             case TIMEZONE:
                 registrationService.updateTimezone(chatId, text);
-                var removeKeyboard = ReplyKeyboardRemove.builder().removeKeyboard(true).build();
                 execSend(chatId,
                         "🎉 Регистрация завершена! 🎉\n\n" +
                                 "Теперь вы будете получать ежедневные уведомления в " +
                                 user.getScheduleTime() + " по времени " + text + "\n\n" +
                                 "Количество вопросов в сессии: " + (user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : 20) + "\n\n" +
-                                "Используйте /menu для доступа к функциям бота.",
-                        removeKeyboard
+                                "Используйте кнопки ниже для быстрого доступа к функциям бота.",
+                        getMainReplyKeyboard()
                 );
                 break;
 
@@ -169,12 +185,13 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     }
 
     private void handleCompletedUser(Long chatId, String text, BotUser user) {
-        if ("/question".equalsIgnoreCase(text)) {
+        // Обработка постоянных кнопок
+        if ("🎲 Начать сессию вопросов".equals(text) || "/question".equalsIgnoreCase(text)) {
             startQuestionSession(chatId, user);
+        } else if ("⚙️ Настройки".equals(text) || "/settings".equalsIgnoreCase(text)) {
+            showSettingsMenu(chatId, user);
         } else if ("/add_question".equalsIgnoreCase(text)) {
             startAddingQuestion(chatId);
-        } else if ("/settings".equalsIgnoreCase(text)) {
-            showSettingsMenu(chatId, user);
         } else if ("/menu".equalsIgnoreCase(text)) {
             showMainMenu(chatId);
         } else {
@@ -196,7 +213,11 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 .text("Показать ответ")
                 .callbackData("ANS:" + question.getId())
                 .build();
-        rows.add(List.of(btn));
+        var replyBtn = InlineKeyboardButton.builder()
+                .text("Ответить")
+                .callbackData("REPLY:" + question.getId())
+                .build();
+        rows.add(List.of(btn, replyBtn));
         kb.setKeyboard(rows);
         execSend(chatId, "❓ Вопрос:\n\n" + question.getQuestionText(), kb);
     }
@@ -207,6 +228,15 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
         if (data != null && data.startsWith("ANS:")) {
             handleAnswerCallback(cq, data.substring(4));
+        } else if (data != null && data.startsWith("REPLY:")) {
+            awaitingText.add(chatId);
+            try {
+                execute(AnswerCallbackQuery.builder()
+                        .callbackQueryId(cq.getId())
+                        .text("Ожидаю ваш текстовый ответ…")
+                        .build());
+            } catch (Exception ignored) {}
+            execSend(chatId, "✍️ Ответьте на вопрос и отправьте одним сообщением.");
         } else if (data != null && data.equals("YES_TEST")) {
             handleTestResponse(cq, true);
         } else if (data != null && data.equals("NO_TEST")) {
@@ -220,6 +250,8 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         } else if (data != null && data.equals("NEXT_QUESTION")) {
             handleNextQuestion(chatId);
         } else if (data != null && data.equals("STOP_QUESTIONS")) {
+            handleStopQuestions(chatId);
+        } else if (data != null && data.equals("EXIT_SESSION")) {
             handleStopQuestions(chatId);
         } else if (data != null && data.equals("SETTINGS_TIME")) {
             handleSettingsTime(chatId);
@@ -289,6 +321,22 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         kb.setKeyboard(rows);
 
         execSend(chatId, "🕐 Время для ежедневного теста!\n\nХотите пройти тест сегодня?", kb);
+    }
+
+    private ReplyKeyboardMarkup getMainReplyKeyboard() {
+        ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
+        keyboard.setResizeKeyboard(true);
+        keyboard.setOneTimeKeyboard(false);
+        keyboard.setSelective(true);
+
+        List<KeyboardRow> rows = new ArrayList<>();
+        KeyboardRow row = new KeyboardRow();
+        row.add(new KeyboardButton("🎲 Начать сессию вопросов"));
+        row.add(new KeyboardButton("⚙️ Настройки"));
+        rows.add(row);
+        keyboard.setKeyboard(rows);
+
+        return keyboard;
     }
 
     private void execSend(Long chatId, String text) {
@@ -425,24 +473,12 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         var keyboard = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
-        var questionBtn = InlineKeyboardButton.builder()
-                .text("🎲 Начать сессию вопросов")
-                .callbackData("RANDOM_QUESTION")
-                .build();
-
         var addQuestionBtn = InlineKeyboardButton.builder()
                 .text("➕ Добавить вопрос")
                 .callbackData("ADD_QUESTION")
                 .build();
 
-        var settingsBtn = InlineKeyboardButton.builder()
-                .text("⚙️ Настройки")
-                .callbackData("SETTINGS_MENU")
-                .build();
-
-        rows.add(List.of(questionBtn));
         rows.add(List.of(addQuestionBtn));
-        rows.add(List.of(settingsBtn));
         keyboard.setKeyboard(rows);
 
         execSend(chatId,
@@ -450,6 +486,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                         "Выберите действие:",
                 keyboard
         );
+        execSend(chatId, "💡 Также можете использовать постоянные кнопки ниже для быстрого доступа:", getMainReplyKeyboard());
     }
 
     private void startQuestionSession(Long chatId, BotUser user) {
@@ -490,7 +527,16 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 .text("Показать ответ")
                 .callbackData("ANS:" + question.getId())
                 .build();
-        rows.add(List.of(answerBtn));
+        var replyBtn = InlineKeyboardButton.builder()
+                .text("Ответить")
+                .callbackData("REPLY:" + question.getId())
+                .build();
+        var exitBtn = InlineKeyboardButton.builder()
+                .text("❌ Выйти из сессии")
+                .callbackData("EXIT_SESSION")
+                .build();
+        rows.add(List.of(answerBtn, replyBtn));
+        rows.add(List.of(exitBtn));
         kb.setKeyboard(rows);
 
         String message = isFirstQuestion ?
@@ -535,7 +581,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         if (nextQuestion != null) {
             sendNextQuestion(chatId, false);
         } else {
-            execSend(chatId, "🎉 **Вы ответили на все вопросы в этой сессии!**");
+            execSend(chatId, "🎉 **Вы ответили на все вопросы в этой сессии!**", getMainReplyKeyboard());
             questionCacheService.clearUserCache(chatId);
         }
     }
@@ -543,7 +589,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     private void handleStopQuestions(Long chatId) {
         questionCacheService.clearUserCache(chatId);
         execSend(chatId, "🏁 **Сессия вопросов завершена.**\n\n" +
-                "Чтобы начать новую сессию, используйте /question или главное меню.");
+                "Чтобы начать новую сессию, используйте кнопку «🎲 Начать сессию вопросов» или главное меню.", getMainReplyKeyboard());
     }
 
     private void showSettingsMenu(Long chatId, BotUser user) {

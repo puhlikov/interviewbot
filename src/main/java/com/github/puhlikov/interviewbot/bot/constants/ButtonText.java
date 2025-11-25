@@ -32,7 +32,6 @@ public final class ButtonText {
     public static final String BACK = "🔙 Назад";
     
     private ButtonText() {
-        // Utility class
     }
 }
 

@@ -1,23 +1,62 @@
-HELP.md
+### Maven ###
 target/
-.mvn/wrapper/maven-wrapper.jar
+!.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
+.mvn/wrapper/maven-wrapper.jar
 
-### STS ###
+### Compiled files ###
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+
+### Logs ###
+*.log
+logs/
+*.log.*
+
+### Temporary files ###
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+
+### OS files ###
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+### IDE ###
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+
+### Eclipse ###
 .apt_generated
 .classpath
 .factorypath
 .project
-.settings
+.settings/
 .springBeans
-.sts4-cache
-
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
+.sts4-cache/
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
 
 ### NetBeans ###
 /nbproject/private/
@@ -31,3 +70,37 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Spring Boot ###
+HELP.md
+application-local.properties
+application-dev.properties
+application-*.properties
+!application.properties
+*.env
+.env
+.env.local
+.env.*.local
+
+### Database ###
+*.db
+*.sqlite
+*.sqlite3
+
+### Backup repositories ###
+*-backup.git/
+interviewbot-backup.git/
+
+### Test reports ###
+surefire-reports/
+test-results/
+*.test-result
+
+### Package files ###
+*.7z
+*.dmg
+*.gz
+*.iso
+*.rar
+*.tar
+*.zip

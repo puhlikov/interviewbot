@@ -44,8 +44,8 @@ public class WorkingApiService {
                         )
                 ),
                 "stream", false,
-                "model", "chatgpt-4o-latest",
-                "temperature", 0.5,
+                "model", "gpt-5",
+                "temperature", 1,
                 "presence_penalty", 0,
                 "frequency_penalty", 0,
                 "top_p", 1

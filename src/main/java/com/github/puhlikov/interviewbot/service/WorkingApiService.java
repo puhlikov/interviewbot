@@ -95,13 +95,13 @@ public class WorkingApiService {
                     return line.replaceAll("\u001B\\[[;\\d]*m", "").trim();
                 })
                 .filter(line -> line.startsWith("data: "))
-                .map(line -> {
+                .flatMap(line -> {
                     // Убираем префикс "data: "
                     String jsonData = line.substring(6).trim();
                     
                     // Пропускаем строку "[DONE]"
                     if ("[DONE]".equals(jsonData)) {
-                        return null;
+                        return Mono.empty();
                     }
                     
                     try {
@@ -112,7 +112,7 @@ public class WorkingApiService {
                             Map<String, Object> error = (Map<String, Object>) chunk.get("error");
                             String errorMsg = String.valueOf(error.get("message"));
                             System.err.println("❌ API returned error: " + errorMsg);
-                            throw new RuntimeException("API Error: " + errorMsg);
+                            return Mono.error(new RuntimeException("API Error: " + errorMsg));
                         }
                         
                         // Извлекаем content из delta
@@ -121,20 +121,19 @@ public class WorkingApiService {
                             var choice = choices.get(0);
                             var delta = (Map<String, Object>) choice.get("delta");
                             if (delta != null && delta.containsKey("content")) {
-                                return String.valueOf(delta.get("content"));
+                                return Mono.just(String.valueOf(delta.get("content")));
                             }
                         }
-                        return null;
+                        return Mono.empty();
                     } catch (RuntimeException e) {
                         // Пробрасываем ошибки API дальше
-                        throw e;
+                        return Mono.error(e);
                     } catch (Exception e) {
                         System.err.println("❌ Error parsing stream chunk: " + e.getMessage());
                         System.err.println("Chunk: " + jsonData);
-                        return null;
+                        return Mono.empty();
                     }
                 })
-                .filter(content -> content != null)
                 .collectList()
                 .map(chunks -> {
                     // Объединяем все части в одну строку

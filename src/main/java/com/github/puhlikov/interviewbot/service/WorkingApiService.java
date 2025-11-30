@@ -45,7 +45,7 @@ public class WorkingApiService {
                         "content", questionText
                 )
         ));
-        requestBody.put("stream", false); // false для получения полного JSON ответа
+        requestBody.put("stream", true); // true для получения stream ответа
         requestBody.put("model", "gpt-4.1-mini");
         requestBody.put("temperature", 0.5);
         requestBody.put("presence_penalty", 0);
@@ -53,44 +53,73 @@ public class WorkingApiService {
         requestBody.put("top_p", 1);
         requestBody.put("max_tokens", 4000);
 
+        ObjectMapper mapper = new ObjectMapper();
+
         return client.post()
                 .uri("/api/openai/v1/chat/completions")
                 .bodyValue(requestBody)
                 .retrieve()
-                .bodyToMono(String.class)
-                .map(rawResponse -> {
+                .bodyToFlux(String.class)
+                .filter(line -> line != null && !line.trim().isEmpty())
+                .map(line -> {
+                    // Удаляем ANSI escape-коды
+                    return line.replaceAll("\u001B\\[[;\\d]*m", "");
+                })
+                .filter(line -> line.startsWith("data: "))
+                .map(line -> {
+                    // Убираем префикс "data: "
+                    String jsonData = line.substring(6).trim();
+                    
+                    // Пропускаем строку "[DONE]"
+                    if ("[DONE]".equals(jsonData)) {
+                        return null;
+                    }
+                    
                     try {
-                        // Удаляем ANSI escape-коды из ответа (если есть)
-                        String cleanedResponse = rawResponse.replaceAll("\u001B\\[[;\\d]*m", "");
+                        Map<String, Object> chunk = mapper.readValue(jsonData, Map.class);
                         
-                        ObjectMapper mapper = new ObjectMapper();
-                        Map<String, Object> response = mapper.readValue(cleanedResponse, Map.class);
-
-                        // Проверяем наличие ошибки в ответе
-                        if (response.containsKey("error")) {
-                            Map<String, Object> error = (Map<String, Object>) response.get("error");
+                        // Проверяем на ошибку
+                        if (chunk.containsKey("error")) {
+                            Map<String, Object> error = (Map<String, Object>) chunk.get("error");
                             String errorMsg = String.valueOf(error.get("message"));
                             System.err.println("❌ API returned error: " + errorMsg);
-                            return "❌ Ошибка API: " + errorMsg;
+                            throw new RuntimeException("API Error: " + errorMsg);
                         }
-
-                        var choices = (java.util.List<Map<String, Object>>) response.get("choices");
+                        
+                        // Извлекаем content из delta
+                        var choices = (java.util.List<Map<String, Object>>) chunk.get("choices");
                         if (choices != null && !choices.isEmpty()) {
-                            var msg = (Map<String, Object>) choices.get(0).get("message");
-                            String content = String.valueOf(msg.get("content"));
-                            System.out.println("✅ Successfully received answer from API (length: " + content.length() + ")");
-                            return content;
-                        } else {
-                            System.err.println("❌ No choices in response: " + cleanedResponse);
-                            return "❌ Не удалось получить ответ от API. Ответ пуст.";
+                            var choice = choices.get(0);
+                            var delta = (Map<String, Object>) choice.get("delta");
+                            if (delta != null && delta.containsKey("content")) {
+                                return String.valueOf(delta.get("content"));
+                            }
                         }
+                        return null;
+                    } catch (RuntimeException e) {
+                        // Пробрасываем ошибки API дальше
+                        throw e;
                     } catch (Exception e) {
-                        System.err.println("❌ Error parsing API response: " + e.getMessage());
-                        System.err.println("Raw response (first 500 chars): " + 
-                                (rawResponse.length() > 500 ? rawResponse.substring(0, 500) + "..." : rawResponse));
-                        e.printStackTrace();
-                        return "❌ Ошибка при обработке ответа от AI: " + e.getMessage();
+                        System.err.println("❌ Error parsing stream chunk: " + e.getMessage());
+                        System.err.println("Chunk: " + jsonData);
+                        return null;
                     }
+                })
+                .filter(content -> content != null)
+                .collectList()
+                .map(chunks -> {
+                    // Объединяем все части в одну строку
+                    StringBuilder fullContent = new StringBuilder();
+                    for (String chunk : chunks) {
+                        fullContent.append(chunk);
+                    }
+                    String result = fullContent.toString();
+                    if (result.isEmpty()) {
+                        System.err.println("❌ Empty response from stream");
+                        return "❌ Не удалось получить ответ от API. Ответ пуст.";
+                    }
+                    System.out.println("✅ Successfully received stream answer from API (length: " + result.length() + ")");
+                    return result;
                 })
                 .onErrorResume(error -> {
                     System.err.println("💥 API request failed: " + error.getMessage());

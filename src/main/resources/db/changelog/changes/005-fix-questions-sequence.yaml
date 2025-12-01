@@ -1,0 +1,15 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-fix-questions-sequence
+      author: puhlikov
+      changes:
+        - sql:
+            sql: |
+              -- Синхронизируем последовательность для таблицы questions
+              -- Устанавливаем значение последовательности на максимальный ID + 1
+              SELECT setval(
+                pg_get_serial_sequence('questions', 'id'),
+                COALESCE((SELECT MAX(id) FROM questions), 1),
+                false
+              );
+

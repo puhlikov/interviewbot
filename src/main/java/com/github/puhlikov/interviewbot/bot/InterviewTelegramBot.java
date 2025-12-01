@@ -105,7 +105,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
         if (!userOpt.isPresent() || userOpt.get().getRegistrationState() == RegistrationState.START) {
             if ("/start".equalsIgnoreCase(text)) {
-                startRegistration(chatId);
+                startRegistration(update);
             } else {
                 execSend(chatId, Messages.START_COMMAND_REQUIRED);
             }
@@ -153,7 +153,14 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                         }
                         
                         execSend(chatId, message.toString());
-                        showContinueOptions(chatId);
+                        
+                        // Проверяем, был ли это последний вопрос
+                        if (questionCacheService.isLastQuestion(chatId)) {
+                            // Это был последний вопрос - завершаем сессию
+                            finishQuestionSession(chatId);
+                        } else {
+                            showContinueOptions(chatId);
+                        }
                     }, error -> {
                         errorHandler.handleErrorWithMessage(chatId, error, 
                             "❌ Произошла ошибка при оценке ответа. Попробуйте еще раз.");
@@ -170,29 +177,39 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         }
     }
 
-    private void startRegistration(Long chatId) {
-        registrationService.startRegistration(chatId);
-        execSend(chatId, Messages.WELCOME);
+    private void startRegistration(Update update) {
+        var msg = update.getMessage();
+        var chatId = msg.getChatId();
+        var from = msg.getFrom();
+        
+        // Получаем данные из Telegram
+        String firstName = from.getFirstName() != null ? from.getFirstName() : "";
+        String lastName = from.getLastName() != null ? from.getLastName() : "";
+        String username = from.getUserName() != null ? from.getUserName() : "";
+        
+        // Автоматически заполняем данные из Telegram
+        registrationService.startRegistration(chatId, firstName, lastName, username);
+        
+        // Формируем приветственное сообщение с данными пользователя
+        StringBuilder welcomeMessage = new StringBuilder("Добро пожаловать! 👋\n\n");
+        welcomeMessage.append("Ваши данные из Telegram:\n");
+        if (!firstName.isEmpty()) {
+            welcomeMessage.append("Имя: ").append(firstName).append("\n");
+        }
+        if (!lastName.isEmpty()) {
+            welcomeMessage.append("Фамилия: ").append(lastName).append("\n");
+        }
+        if (!username.isEmpty()) {
+            welcomeMessage.append("Username: @").append(username).append("\n");
+        }
+        welcomeMessage.append("\nТеперь введите время для ежедневной рассылки в формате HH:mm (например, 14:00):");
+        
+        execSend(chatId, welcomeMessage.toString());
     }
 
     private void handleRegistrationStep(Long chatId, String text, BotUser user) {
         switch (user.getRegistrationState()) {
             case START:
-            case FIRST_NAME:
-                registrationService.updateFirstName(chatId, text);
-                execSend(chatId, Messages.ENTER_FIRST_NAME);
-                break;
-
-            case LAST_NAME:
-                registrationService.updateLastName(chatId, text);
-                execSend(chatId, Messages.ENTER_LAST_NAME);
-                break;
-
-            case USERNAME:
-                registrationService.updateUsername(chatId, text);
-                execSend(chatId, Messages.ENTER_USERNAME);
-                break;
-
             case SCHEDULE_TIME:
                 try {
                     registrationService.updateScheduleTime(chatId, text);
@@ -224,6 +241,8 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         // Обработка постоянных кнопок
         if (ButtonText.START_SESSION.equals(text) || "/question".equalsIgnoreCase(text)) {
             startQuestionSession(chatId, user);
+        } else if (ButtonText.STOP_SESSION.equals(text)) {
+            finishQuestionSession(chatId);
         } else if (ButtonText.SETTINGS.equals(text) || "/settings".equalsIgnoreCase(text)) {
             showSettingsMenu(chatId, user);
         } else if ("/add_question".equalsIgnoreCase(text)) {
@@ -297,8 +316,17 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                     execSend(chatId, Messages.formattedAnswer(answer));
                     if (cache != null) {
                         execSend(chatId, "⚠️ Поскольку вы посмотрели ответ, за этот вопрос поставлена оценка **0/10**");
+                        
+                        // Проверяем, был ли это последний вопрос
+                        if (questionCacheService.isLastQuestion(chatId)) {
+                            // Это был последний вопрос - завершаем сессию
+                            finishQuestionSession(chatId);
+                        } else {
+                            showContinueOptions(chatId);
+                        }
+                    } else {
+                        showContinueOptions(chatId);
                     }
-                    showContinueOptions(chatId);
                 });
             });
         } catch (NumberFormatException e) {
@@ -394,17 +422,28 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 question.setDifficultyLevel(difficultyText);
                 question.setIsActive(true);
 
-                questionService.save(question);
+                try {
+                    questionService.save(question);
+                    questionSessionService.completeSession(chatId);
 
-                questionSessionService.completeSession(chatId);
+                    execSend(chatId, Messages.questionAdded(
+                            question.getQuestionText(),
+                            question.getCategory(),
+                            question.getDifficultyLevel()
+                    ));
 
-                execSend(chatId, Messages.questionAdded(
-                        question.getQuestionText(),
-                        question.getCategory(),
-                        question.getDifficultyLevel()
-                ));
-
-                answerCallback(cq, "Сложность выбрана: " + difficultyText);
+                    answerCallback(cq, "Сложность выбрана: " + difficultyText);
+                } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                    // Обработка ошибок целостности данных (например, дублирование ключа)
+                    logger.error("Failed to save question due to database constraint violation", e);
+                    errorHandler.handleErrorWithMessage(chatId, e, 
+                        "❌ Ошибка при сохранении вопроса. Возможно, произошла ошибка базы данных. Попробуйте еще раз.");
+                    questionSessionService.completeSession(chatId);
+                } catch (Exception e) {
+                    logger.error("Unexpected error while saving question", e);
+                    errorHandler.handleErrorWithMessage(chatId, e, Messages.ERROR_SAVING_QUESTION);
+                    questionSessionService.completeSession(chatId);
+                }
             }
         } catch (Exception e) {
             errorHandler.handleErrorWithMessage(cq.getMessage().getChatId(), e, Messages.ERROR_SAVING_QUESTION);
@@ -439,10 +478,25 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
             return;
         }
 
-        sendNextQuestion(chatId, true);
+        // Обновляем клавиатуру на "Закончить сессию"
+        var cache = questionCacheService.getUserCache(chatId);
+        int totalQuestions = cache != null ? cache.getQuestions().size() : questionsCount;
+        String sessionStartMessage = String.format(
+            "✅ **Сессия начата!**\n\n" +
+            "📊 Количество вопросов в сессии: **%d**\n\n" +
+            "Используйте кнопки ниже для управления.",
+            totalQuestions
+        );
+        execSend(chatId, sessionStartMessage, KeyboardBuilder.createSessionReplyKeyboard());
+        
+        sendNextQuestion(chatId, true, questionsCount);
     }
 
     private void sendNextQuestion(Long chatId, boolean isFirstQuestion) {
+        sendNextQuestion(chatId, isFirstQuestion, null);
+    }
+    
+    private void sendNextQuestion(Long chatId, boolean isFirstQuestion, Integer totalQuestions) {
         Question question = questionCacheService.getCurrentQuestion(chatId);
 
         if (question == null) {
@@ -452,11 +506,22 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         }
 
         var keyboard = KeyboardBuilder.createQuestionKeyboard(question.getId());
-        int questionNumber = questionCacheService.getUserCache(chatId).getCurrentIndex() + 1;
+        var cache = questionCacheService.getUserCache(chatId);
+        int questionNumber = cache != null ? cache.getCurrentIndex() + 1 : 1;
         
-        String message = isFirstQuestion ?
-                Messages.QUESTION_SESSION_STARTED + "\n\n" + Messages.questionNumber(questionNumber) + question.getQuestionText() :
-                Messages.questionNumber(questionNumber) + question.getQuestionText();
+        String message;
+        if (isFirstQuestion) {
+            int total = totalQuestions != null ? totalQuestions : (cache != null ? cache.getQuestions().size() : 1);
+            message = String.format(
+                "%s\n\n📊 Вопросов в сессии: **%d**\n\n%s%s",
+                Messages.QUESTION_SESSION_STARTED,
+                total,
+                Messages.questionNumber(questionNumber),
+                question.getQuestionText()
+            );
+        } else {
+            message = Messages.questionNumber(questionNumber) + question.getQuestionText();
+        }
 
         execSend(chatId, message, keyboard);
     }
@@ -466,13 +531,10 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         var keyboard = KeyboardBuilder.createContinueKeyboard(hasNext);
         String message = hasNext ? Messages.WHAT_NEXT : Messages.SESSION_COMPLETED;
         
-        // Если сессия завершена, показываем среднюю оценку
+        // Если сессия завершена (нет следующего вопроса), завершаем сессию
         if (!hasNext) {
-            var cache = questionCacheService.getUserCache(chatId);
-            if (cache != null && !cache.getScores().isEmpty()) {
-                double averageScore = cache.getAverageScore();
-                message += String.format("\n\n📊 **Ваш средний результат: %.1f/10**", averageScore);
-            }
+            finishQuestionSession(chatId);
+            return;
         }
         
         execSend(chatId, message, keyboard);
@@ -483,24 +545,53 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         if (nextQuestion != null) {
             sendNextQuestion(chatId, false);
         } else {
-            // Сессия завершена - показываем среднюю оценку
-            var cache = questionCacheService.getUserCache(chatId);
-            String completionMessage = Messages.SESSION_COMPLETED;
-            
-            if (cache != null && !cache.getScores().isEmpty()) {
-                double averageScore = cache.getAverageScore();
-                completionMessage += String.format("\n\n📊 **Ваш средний результат: %.1f/10**\n\n" +
-                    "Всего вопросов: %d", averageScore, cache.getScores().size());
-            }
-            
-            execSend(chatId, completionMessage, KeyboardBuilder.createMainReplyKeyboard());
-            questionCacheService.clearUserCache(chatId);
+            // Сессия завершена автоматически - показываем среднюю оценку
+            finishQuestionSession(chatId);
         }
     }
 
     private void handleStopQuestions(Long chatId) {
+        finishQuestionSession(chatId);
+    }
+    
+    /**
+     * Завершает сессию вопросов и показывает среднюю оценку
+     */
+    private void finishQuestionSession(Long chatId) {
+        var cache = questionCacheService.getUserCache(chatId);
+        
+        if (cache == null) {
+            execSend(chatId, "❌ Активная сессия не найдена.", KeyboardBuilder.createMainReplyKeyboard());
+            return;
+        }
+        
+        // Вычисляем среднюю оценку на основе отвеченных вопросов
+        String completionMessage;
+        int totalQuestions = cache.getTotalQuestions();
+        int answeredCount = cache.getScores().size();
+        
+        if (!cache.getScores().isEmpty()) {
+            double averageScore = cache.getAverageScore();
+            
+            completionMessage = String.format(
+                "🏁 **Сессия вопросов завершена!**\n\n" +
+                "📊 **Ваш результат:**\n" +
+                "• Средняя оценка: **%.1f/10**\n" +
+                "• Отвечено вопросов: **%d из %d**\n\n" +
+                "Спасибо за прохождение сессии!",
+                averageScore, answeredCount, totalQuestions
+            );
+        } else {
+            completionMessage = String.format(
+                "🏁 **Сессия вопросов завершена!**\n\n" +
+                "📊 Вопросов в сессии: **%d**\n\n" +
+                "Вы не ответили ни на один вопрос.",
+                totalQuestions
+            );
+        }
+        
+        execSend(chatId, completionMessage, KeyboardBuilder.createMainReplyKeyboard());
         questionCacheService.clearUserCache(chatId);
-        execSend(chatId, Messages.SESSION_STOPPED, KeyboardBuilder.createMainReplyKeyboard());
     }
 
     private void showSettingsMenu(Long chatId, BotUser user) {

@@ -41,6 +41,16 @@ public class QuestionCacheService {
         var cache = userCache.get(chatId);
         return cache != null && cache.hasNext();
     }
+    
+    public boolean isLastQuestion(Long chatId) {
+        var cache = userCache.get(chatId);
+        return cache != null && cache.isLastQuestion();
+    }
+    
+    public int getTotalQuestions(Long chatId) {
+        var cache = userCache.get(chatId);
+        return cache != null ? cache.getTotalQuestions() : 0;
+    }
 
     public void clearUserCache(Long chatId) {
         userCache.remove(chatId);

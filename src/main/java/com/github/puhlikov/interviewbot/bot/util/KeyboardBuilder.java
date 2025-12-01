@@ -40,6 +40,25 @@ public final class KeyboardBuilder {
     }
     
     /**
+     * Создает Reply клавиатуру во время активной сессии вопросов
+     */
+    public static ReplyKeyboardMarkup createSessionReplyKeyboard() {
+        ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
+        keyboard.setResizeKeyboard(true);
+        keyboard.setOneTimeKeyboard(false);
+        keyboard.setSelective(true);
+        
+        List<KeyboardRow> rows = new ArrayList<>();
+        KeyboardRow row = new KeyboardRow();
+        row.add(new KeyboardButton(ButtonText.STOP_SESSION));
+        row.add(new KeyboardButton(ButtonText.SETTINGS));
+        rows.add(row);
+        keyboard.setKeyboard(rows);
+        
+        return keyboard;
+    }
+    
+    /**
      * Создает Inline клавиатуру для вопроса с кнопками "Показать ответ", "Ответить", "Выйти"
      */
     public static InlineKeyboardMarkup createQuestionKeyboard(Long questionId) {

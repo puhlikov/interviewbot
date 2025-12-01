@@ -46,10 +46,22 @@ public class RegistrationService {
                 .orElse(null);
     }
 
+    public BotUser startRegistration(Long chatId, String firstName, String lastName, String username) {
+        BotUser user = new BotUser();
+        user.setChatId(chatId);
+        user.setFirstName(firstName);
+        user.setLastName(lastName);
+        user.setUsername(username);
+        user.setRegistrationState(RegistrationState.SCHEDULE_TIME); // Сразу переходим к настройке времени
+        return userRepository.save(user);
+    }
+    
+    // Обратная совместимость для существующих вызовов
+    @Deprecated
     public BotUser startRegistration(Long chatId) {
         BotUser user = new BotUser();
         user.setChatId(chatId);
-        user.setRegistrationState(RegistrationState.FIRST_NAME);
+        user.setRegistrationState(RegistrationState.SCHEDULE_TIME);
         return userRepository.save(user);
     }
 

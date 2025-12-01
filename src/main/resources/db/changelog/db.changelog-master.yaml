@@ -12,3 +12,5 @@ databaseChangeLog:
       file: db/changelog/changes/002-create-questions-table.yaml
   - include:
       file: db/changelog/changes/003-add-questions-per-session.yaml
+  - include:
+      file: db/changelog/changes/005-fix-questions-sequence.yaml

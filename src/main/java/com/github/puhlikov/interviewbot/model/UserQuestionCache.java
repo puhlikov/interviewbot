@@ -27,7 +27,18 @@ public class UserQuestionCache {
     }
 
     public boolean hasNext() {
+        // Проверяем, есть ли еще вопросы после текущего
+        // Если currentIndex уже на последнем вопросе (questions.size() - 1), то следующего нет
         return currentIndex < questions.size() - 1;
+    }
+    
+    public boolean isLastQuestion() {
+        // Проверяем, является ли текущий вопрос последним
+        return currentIndex == questions.size() - 1;
+    }
+    
+    public int getTotalQuestions() {
+        return questions != null ? questions.size() : 0;
     }
 
     public Question getCurrentQuestion() {

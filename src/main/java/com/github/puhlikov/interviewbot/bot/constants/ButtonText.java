@@ -7,6 +7,7 @@ public final class ButtonText {
     
     // Main menu buttons
     public static final String START_SESSION = "🎲 Начать сессию вопросов";
+    public static final String STOP_SESSION = "🏁 Закончить сессию вопросов";
     public static final String SETTINGS = "⚙️ Настройки";
     public static final String ADD_QUESTION = "➕ Добавить вопрос";
     

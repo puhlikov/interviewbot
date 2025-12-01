@@ -138,11 +138,21 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 
                 // Оцениваем ответ пользователя
                 workingApiService.evaluateAnswer(currentQuestion.getQuestionText(), text)
-                    .subscribe(score -> {
+                    .subscribe(evaluation -> {
                         // Сохраняем оценку только в кэш сессии
-                        cache.addScore(score);
+                        cache.addScore(evaluation.getScore());
                         
-                        execSend(chatId, String.format("✅ Ваш ответ оценен: **%d/10**\n\n📝 Ваш ответ: %s", score, text));
+                        // Формируем сообщение с оценкой и дополнениями
+                        StringBuilder message = new StringBuilder();
+                        message.append(String.format("✅ **Ваш ответ оценен: %d/10**\n\n", evaluation.getScore()));
+                        message.append(String.format("📝 **Ваш ответ:** %s\n\n", text));
+                        
+                        if (evaluation.hasFeedback()) {
+                            message.append("💡 **Дополнения и рекомендации:**\n");
+                            message.append(evaluation.getFeedback());
+                        }
+                        
+                        execSend(chatId, message.toString());
                         showContinueOptions(chatId);
                     }, error -> {
                         errorHandler.handleErrorWithMessage(chatId, error, 

@@ -176,12 +176,13 @@ public class WorkingApiService {
     }
 
     /**
-     * Оценивает ответ пользователя по 10-бальной шкале
+     * Оценивает ответ пользователя по 10-бальной шкале и предоставляет дополнения
      * @param questionText Текст вопроса
      * @param userAnswerText Ответ пользователя
-     * @return Mono с оценкой от 0 до 10
+     * @return Mono с оценкой и дополнениями
      */
-    public Mono<Integer> evaluateAnswer(String questionText, String userAnswerText) {
+    public Mono<com.github.puhlikov.interviewbot.model.AnswerEvaluation> evaluateAnswer(
+            String questionText, String userAnswerText) {
         String prompt = String.format(
             "Вопрос: %s\n\nОтвет пользователя: %s\n\n" +
             "Оцени ответ пользователя по 10-бальной шкале, где:\n" +
@@ -190,23 +191,85 @@ public class WorkingApiService {
             "- 5-6: Частично верный ответ с некоторыми неточностями\n" +
             "- 7-8: Верный ответ с небольшими недочетами\n" +
             "- 9-10: Полностью верный и полный ответ\n\n" +
-            "Ответь ТОЛЬКО числом от 0 до 10, без дополнительных пояснений.",
+            "Ответь в следующем формате (строго соблюдай формат):\n" +
+            "ОЦЕНКА: [число от 0 до 10]\n" +
+            "ДОПОЛНЕНИЯ: [что не было упомянуто в ответе пользователя, что можно добавить или улучшить. " +
+            "Если ответ полный и верный (9-10), напиши 'Ответ полный и верный'. " +
+            "Если ответ неверный, укажи основные ошибки и что нужно исправить]",
             questionText, userAnswerText
         );
 
         return getAnswer(prompt)
-                .map(response -> {
-                    // Извлекаем число из ответа
-                    String cleaned = response.trim().replaceAll("[^0-9]", "");
-                    try {
-                        int score = Integer.parseInt(cleaned);
-                        return Math.max(AppConstants.MIN_SCORE, 
-                                Math.min(AppConstants.MAX_SCORE, score));
-                    } catch (NumberFormatException e) {
-                        logger.warn("Failed to parse score from response: {}", response);
-                        return AppConstants.DEFAULT_SCORE_ON_ERROR;
+                .map(response -> parseEvaluationResponse(response))
+                .onErrorReturn(new com.github.puhlikov.interviewbot.model.AnswerEvaluation(
+                    AppConstants.DEFAULT_SCORE_ON_ERROR, 
+                    "Не удалось оценить ответ. Попробуйте еще раз."));
+    }
+    
+    private com.github.puhlikov.interviewbot.model.AnswerEvaluation parseEvaluationResponse(String response) {
+        try {
+            int score = AppConstants.DEFAULT_SCORE_ON_ERROR;
+            String feedback = "";
+            
+            // Извлекаем оценку
+            String[] lines = response.split("\n");
+            for (String line : lines) {
+                if (line.trim().startsWith("ОЦЕНКА:") || line.trim().startsWith("ОЦЕНКА")) {
+                    String scoreStr = line.replaceAll("ОЦЕНКА:?", "").trim().replaceAll("[^0-9]", "");
+                    if (!scoreStr.isEmpty()) {
+                        score = Integer.parseInt(scoreStr);
+                        score = Math.max(AppConstants.MIN_SCORE, Math.min(AppConstants.MAX_SCORE, score));
                     }
-                })
-                .onErrorReturn(AppConstants.DEFAULT_SCORE_ON_ERROR);
+                } else if (line.trim().startsWith("ДОПОЛНЕНИЯ:") || line.trim().startsWith("ДОПОЛНЕНИЯ")) {
+                    feedback = line.replaceAll("ДОПОЛНЕНИЯ:?", "").trim();
+                }
+            }
+            
+            // Если не нашли в формате, пытаемся извлечь число из всего ответа
+            if (score == AppConstants.DEFAULT_SCORE_ON_ERROR && feedback.isEmpty()) {
+                String cleaned = response.trim().replaceAll("[^0-9]", "");
+                if (!cleaned.isEmpty()) {
+                    score = Integer.parseInt(cleaned);
+                    score = Math.max(AppConstants.MIN_SCORE, Math.min(AppConstants.MAX_SCORE, score));
+                }
+                // Берем весь ответ как дополнения (кроме числа)
+                feedback = response.replaceAll("\\d+", "").trim();
+                if (feedback.length() > 500) {
+                    feedback = feedback.substring(0, 500) + "...";
+                }
+            }
+            
+            // Если дополнения не найдены, но есть текст после оценки
+            if (feedback.isEmpty() && response.length() > 20) {
+                // Пытаемся найти текст после "ОЦЕНКА" или числа
+                String[] parts = response.split("(ОЦЕНКА|\\d+)", 2);
+                if (parts.length > 1) {
+                    feedback = parts[1].trim();
+                    if (feedback.length() > 500) {
+                        feedback = feedback.substring(0, 500) + "...";
+                    }
+                }
+            }
+            
+            // Если все еще нет дополнений, используем дефолтное сообщение
+            if (feedback.isEmpty()) {
+                if (score >= 9) {
+                    feedback = "Ответ полный и верный!";
+                } else if (score >= 7) {
+                    feedback = "Ответ верный, но можно добавить больше деталей.";
+                } else if (score >= 5) {
+                    feedback = "Ответ частично верный, но есть неточности и неполнота.";
+                } else {
+                    feedback = "Ответ требует значительных улучшений и дополнений.";
+                }
+            }
+            
+            return new com.github.puhlikov.interviewbot.model.AnswerEvaluation(score, feedback);
+        } catch (Exception e) {
+            logger.warn("Failed to parse evaluation response: {}", response, e);
+            return new com.github.puhlikov.interviewbot.model.AnswerEvaluation(
+                AppConstants.DEFAULT_SCORE_ON_ERROR, 
+                "Не удалось обработать оценку. Попробуйте еще раз.");
+        }
     }
 }

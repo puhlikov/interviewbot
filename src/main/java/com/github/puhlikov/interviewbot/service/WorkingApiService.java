@@ -1,6 +1,9 @@
 package com.github.puhlikov.interviewbot.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.puhlikov.interviewbot.bot.constants.AppConstants;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
@@ -20,19 +23,27 @@ import java.util.Map;
 @Service
 public class WorkingApiService {
 
+    private static final Logger logger = LoggerFactory.getLogger(WorkingApiService.class);
+    private static final String API_BASE_URL = "https://chat.gpt-chatbot.ru";
+    private static final String API_ENDPOINT = "/api/openai/v1/chat/completions";
+    private static final String DATA_PREFIX = "data: ";
+    private static final String DONE_MARKER = "[DONE]";
+    private static final String ANSI_ESCAPE_REGEX = "\u001B\\[[;\\d]*m";
+    
     private final WebClient client;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public WorkingApiService() {
-        // Настраиваем HttpClient с таймаутами для длительных соединений
         HttpClient httpClient = HttpClient.create()
-                .responseTimeout(Duration.ofMinutes(5)) // Таймаут ответа 5 минут
-                .keepAlive(true) // Keep-alive для длительных соединений
+                .responseTimeout(Duration.ofMinutes(AppConstants.API_RESPONSE_TIMEOUT_MINUTES))
+                .keepAlive(true)
                 .followRedirect(true);
 
         this.client = WebClient.builder()
-                .baseUrl("https://chat.gpt-chatbot.ru")
+                .baseUrl(API_BASE_URL)
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024)) // 10MB для больших ответов
+                .codecs(configurer -> configurer.defaultCodecs()
+                    .maxInMemorySize(AppConstants.API_MAX_IN_MEMORY_SIZE_MB * 1024 * 1024))
                 .defaultHeader("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 YaBrowser/25.8.0.0 Safari/537.36")
                 .defaultHeader("Accept", "application/json, text/event-stream")
                 .defaultHeader("Accept-Language", "ru,en;q=0.9,la;q=0.8,sr;q=0.7,bg;q=0.6")
@@ -50,112 +61,152 @@ public class WorkingApiService {
     }
 
     public Mono<String> getAnswer(String questionText) {
-        System.out.println("🤖 Sending request to GPT-Chatbot API for question: " +
-                (questionText.length() > 50 ? questionText.substring(0, 50) + "..." : questionText));
+        String logQuestion = questionText.length() > 50 
+            ? questionText.substring(0, 50) + "..." 
+            : questionText;
+        logger.debug("Sending request to GPT-Chatbot API for question: {}", logQuestion);
 
-        // Используем HashMap для поддержки max_tokens
-        var requestBody = new HashMap<String, Object>();
-        requestBody.put("messages", List.of(
-                Map.of(
-                        "role", "user",
-                        "content", questionText
-                )
-        ));
-        requestBody.put("stream", true); // true для получения stream ответа
-        requestBody.put("model", "gpt-4.1-mini");
-        requestBody.put("temperature", 0.5);
-        requestBody.put("presence_penalty", 0);
-        requestBody.put("frequency_penalty", 0);
-        requestBody.put("top_p", 1);
-        requestBody.put("max_tokens", 4000);
-
-        ObjectMapper mapper = new ObjectMapper();
+        Map<String, Object> requestBody = buildRequestBody(questionText);
 
         return client.post()
-                .uri("/api/openai/v1/chat/completions")
+                .uri(API_ENDPOINT)
                 .bodyValue(requestBody)
                 .retrieve()
                 .bodyToFlux(DataBuffer.class)
-                .timeout(Duration.ofMinutes(5)) // Таймаут для всего потока
-                .map(dataBuffer -> {
-                    // Преобразуем DataBuffer в строку
-                    byte[] bytes = new byte[dataBuffer.readableByteCount()];
-                    dataBuffer.read(bytes);
-                    DataBufferUtils.release(dataBuffer);
-                    return new String(bytes, StandardCharsets.UTF_8);
-                })
-                .flatMap(content -> {
-                    // Разбиваем содержимое на строки
-                    String[] lines = content.split("\r?\n");
-                    return Flux.fromArray(lines);
-                })
+                .timeout(Duration.ofMinutes(AppConstants.API_RESPONSE_TIMEOUT_MINUTES))
+                .map(this::convertDataBufferToString)
+                .flatMap(this::splitIntoLines)
                 .filter(line -> line != null && !line.trim().isEmpty())
-                .map(line -> {
-                    // Удаляем ANSI escape-коды
-                    return line.replaceAll("\u001B\\[[;\\d]*m", "").trim();
-                })
-                .filter(line -> line.startsWith("data: "))
-                .flatMap(line -> {
-                    // Убираем префикс "data: "
-                    String jsonData = line.substring(6).trim();
-                    
-                    // Пропускаем строку "[DONE]"
-                    if ("[DONE]".equals(jsonData)) {
-                        return Mono.empty();
-                    }
-                    
-                    try {
-                        Map<String, Object> chunk = mapper.readValue(jsonData, Map.class);
-                        
-                        // Проверяем на ошибку
-                        if (chunk.containsKey("error")) {
-                            Map<String, Object> error = (Map<String, Object>) chunk.get("error");
-                            String errorMsg = String.valueOf(error.get("message"));
-                            System.err.println("❌ API returned error: " + errorMsg);
-                            return Mono.error(new RuntimeException("API Error: " + errorMsg));
-                        }
-                        
-                        // Извлекаем content из delta
-                        var choices = (java.util.List<Map<String, Object>>) chunk.get("choices");
-                        if (choices != null && !choices.isEmpty()) {
-                            var choice = choices.get(0);
-                            var delta = (Map<String, Object>) choice.get("delta");
-                            if (delta != null && delta.containsKey("content")) {
-                                return Mono.just(String.valueOf(delta.get("content")));
-                            }
-                        }
-                        return Mono.empty();
-                    } catch (RuntimeException e) {
-                        // Пробрасываем ошибки API дальше
-                        return Mono.error(e);
-                    } catch (Exception e) {
-                        System.err.println("❌ Error parsing stream chunk: " + e.getMessage());
-                        System.err.println("Chunk: " + jsonData);
-                        return Mono.empty();
-                    }
-                })
+                .map(this::removeAnsiCodes)
+                .filter(line -> line.startsWith(DATA_PREFIX))
+                .flatMap(this::parseStreamChunk)
                 .collectList()
-                .map(chunks -> {
-                    // Объединяем все части в одну строку
-                    StringBuilder fullContent = new StringBuilder();
-                    for (String chunk : chunks) {
-                        fullContent.append(chunk);
-                    }
-                    String result = fullContent.toString();
-                    if (result.isEmpty()) {
-                        System.err.println("❌ Empty response from stream");
-                        return "❌ Не удалось получить ответ от API. Ответ пуст.";
-                    }
-                    System.out.println("✅ Successfully received stream answer from API (length: " + result.length() + ")");
-                    return result;
-                })
-                .retryWhen(Retry.backoff(2, Duration.ofSeconds(1))
+                .map(this::combineChunks)
+                .retryWhen(Retry.backoff(AppConstants.API_RETRY_ATTEMPTS, 
+                        Duration.ofSeconds(AppConstants.API_RETRY_DELAY_SECONDS))
                         .filter(throwable -> throwable.getMessage() != null && 
                                 throwable.getMessage().contains("Connection reset")))
-                .onErrorResume(error -> {
-                    System.err.println("💥 API request failed: " + error.getMessage());
-                    error.printStackTrace();
-                    return Mono.just("❌ Ошибка сети при запросе к AI: " + error.getMessage());
-                });
+                .onErrorResume(this::handleError);
+    }
+    
+    private Map<String, Object> buildRequestBody(String questionText) {
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("messages", List.of(Map.of("role", "user", "content", questionText)));
+        requestBody.put("stream", true);
+        requestBody.put("model", "gpt-4.1-mini");
+        requestBody.put("temperature", AppConstants.API_TEMPERATURE);
+        requestBody.put("presence_penalty", 0);
+        requestBody.put("frequency_penalty", 0);
+        requestBody.put("top_p", 1);
+        requestBody.put("max_tokens", AppConstants.API_MAX_TOKENS);
+        return requestBody;
+    }
+    
+    private String convertDataBufferToString(DataBuffer dataBuffer) {
+        byte[] bytes = new byte[dataBuffer.readableByteCount()];
+        dataBuffer.read(bytes);
+        DataBufferUtils.release(dataBuffer);
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+    
+    private Flux<String> splitIntoLines(String content) {
+        return Flux.fromArray(content.split("\r?\n"));
+    }
+    
+    private String removeAnsiCodes(String line) {
+        return line.replaceAll(ANSI_ESCAPE_REGEX, "").trim();
+    }
+    
+    private Mono<String> parseStreamChunk(String line) {
+        String jsonData = line.substring(DATA_PREFIX.length()).trim();
+        
+        if (DONE_MARKER.equals(jsonData)) {
+            return Mono.empty();
+        }
+        
+        try {
+            Map<String, Object> chunk = objectMapper.readValue(jsonData, Map.class);
+            
+            if (chunk.containsKey("error")) {
+                Map<String, Object> error = (Map<String, Object>) chunk.get("error");
+                String errorMsg = String.valueOf(error.get("message"));
+                logger.error("API returned error: {}", errorMsg);
+                return Mono.error(new RuntimeException("API Error: " + errorMsg));
+            }
+            
+            return extractContentFromChunk(chunk);
+        } catch (RuntimeException e) {
+            return Mono.error(e);
+        } catch (Exception e) {
+            logger.warn("Error parsing stream chunk: {}", jsonData, e);
+            return Mono.empty();
+        }
+    }
+    
+    @SuppressWarnings("unchecked")
+    private Mono<String> extractContentFromChunk(Map<String, Object> chunk) {
+        var choices = (List<Map<String, Object>>) chunk.get("choices");
+        if (choices != null && !choices.isEmpty()) {
+            var choice = choices.get(0);
+            var delta = (Map<String, Object>) choice.get("delta");
+            if (delta != null && delta.containsKey("content")) {
+                return Mono.just(String.valueOf(delta.get("content")));
+            }
+        }
+        return Mono.empty();
+    }
+    
+    private String combineChunks(List<String> chunks) {
+        StringBuilder fullContent = new StringBuilder();
+        for (String chunk : chunks) {
+            fullContent.append(chunk);
+        }
+        String result = fullContent.toString();
+        if (result.isEmpty()) {
+            logger.warn("Empty response from stream");
+            return "❌ Не удалось получить ответ от API. Ответ пуст.";
+        }
+        logger.debug("Successfully received stream answer from API (length: {})", result.length());
+        return result;
+    }
+    
+    private Mono<String> handleError(Throwable error) {
+        logger.error("API request failed", error);
+        return Mono.just("❌ Ошибка сети при запросе к AI: " + error.getMessage());
+    }
+
+    /**
+     * Оценивает ответ пользователя по 10-бальной шкале
+     * @param questionText Текст вопроса
+     * @param userAnswerText Ответ пользователя
+     * @return Mono с оценкой от 0 до 10
+     */
+    public Mono<Integer> evaluateAnswer(String questionText, String userAnswerText) {
+        String prompt = String.format(
+            "Вопрос: %s\n\nОтвет пользователя: %s\n\n" +
+            "Оцени ответ пользователя по 10-бальной шкале, где:\n" +
+            "- 0-2: Полностью неверный ответ или отсутствие ответа\n" +
+            "- 3-4: Неверный ответ с частичным пониманием\n" +
+            "- 5-6: Частично верный ответ с некоторыми неточностями\n" +
+            "- 7-8: Верный ответ с небольшими недочетами\n" +
+            "- 9-10: Полностью верный и полный ответ\n\n" +
+            "Ответь ТОЛЬКО числом от 0 до 10, без дополнительных пояснений.",
+            questionText, userAnswerText
+        );
+
+        return getAnswer(prompt)
+                .map(response -> {
+                    // Извлекаем число из ответа
+                    String cleaned = response.trim().replaceAll("[^0-9]", "");
+                    try {
+                        int score = Integer.parseInt(cleaned);
+                        return Math.max(AppConstants.MIN_SCORE, 
+                                Math.min(AppConstants.MAX_SCORE, score));
+                    } catch (NumberFormatException e) {
+                        logger.warn("Failed to parse score from response: {}", response);
+                        return AppConstants.DEFAULT_SCORE_ON_ERROR;
+                    }
+                })
+                .onErrorReturn(AppConstants.DEFAULT_SCORE_ON_ERROR);
     }
 }

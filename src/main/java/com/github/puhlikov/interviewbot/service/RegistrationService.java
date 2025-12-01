@@ -1,9 +1,12 @@
 package com.github.puhlikov.interviewbot.service;
 
+import com.github.puhlikov.interviewbot.bot.constants.AppConstants;
 import com.github.puhlikov.interviewbot.enums.RegistrationState;
 import com.github.puhlikov.interviewbot.enums.SettingsState;
 import com.github.puhlikov.interviewbot.model.BotUser;
 import com.github.puhlikov.interviewbot.repo.BotUserRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
@@ -20,11 +23,27 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class RegistrationService {
 
+    private static final Logger logger = LoggerFactory.getLogger(RegistrationService.class);
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern(AppConstants.TIME_FORMAT);
+    
     private final BotUserRepository userRepository;
     private final Map<Long, SettingsState> userSettingsState = new ConcurrentHashMap<>();
 
     public RegistrationService(BotUserRepository userRepository) {
         this.userRepository = userRepository;
+    }
+    
+    private Optional<BotUser> findUser(Long chatId) {
+        return userRepository.findByChatId(chatId);
+    }
+    
+    private BotUser updateUser(Long chatId, java.util.function.Consumer<BotUser> updater) {
+        return findUser(chatId)
+                .map(user -> {
+                    updater.accept(user);
+                    return userRepository.save(user);
+                })
+                .orElse(null);
     }
 
     public BotUser startRegistration(Long chatId) {
@@ -39,74 +58,49 @@ public class RegistrationService {
     }
 
     public BotUser updateUserState(Long chatId, RegistrationState state) {
-        Optional<BotUser> userOpt = userRepository.findByChatId(chatId);
-        if (userOpt.isPresent()) {
-            BotUser user = userOpt.get();
-            user.setRegistrationState(state);
-            return userRepository.save(user);
-        }
-        return null;
+        return updateUser(chatId, user -> user.setRegistrationState(state));
     }
 
     public BotUser updateFirstName(Long chatId, String firstName) {
-        Optional<BotUser> userOpt = userRepository.findByChatId(chatId);
-        if (userOpt.isPresent()) {
-            BotUser user = userOpt.get();
+        return updateUser(chatId, user -> {
             user.setFirstName(firstName);
             user.setRegistrationState(RegistrationState.LAST_NAME);
-            return userRepository.save(user);
-        }
-        return null;
+        });
     }
 
     public BotUser updateLastName(Long chatId, String lastName) {
-        Optional<BotUser> userOpt = userRepository.findByChatId(chatId);
-        if (userOpt.isPresent()) {
-            BotUser user = userOpt.get();
+        return updateUser(chatId, user -> {
             user.setLastName(lastName);
             user.setRegistrationState(RegistrationState.USERNAME);
-            return userRepository.save(user);
-        }
-        return null;
+        });
     }
 
     public BotUser updateUsername(Long chatId, String username) {
-        Optional<BotUser> userOpt = userRepository.findByChatId(chatId);
-        if (userOpt.isPresent()) {
-            BotUser user = userOpt.get();
+        return updateUser(chatId, user -> {
             user.setUsername(username);
             user.setRegistrationState(RegistrationState.SCHEDULE_TIME);
-            return userRepository.save(user);
-        }
-        return null;
+        });
     }
 
     public BotUser updateScheduleTime(Long chatId, String timeString) {
         try {
-            LocalTime scheduleTime = LocalTime.parse(timeString, DateTimeFormatter.ofPattern("HH:mm"));
-            Optional<BotUser> userOpt = userRepository.findByChatId(chatId);
-            if (userOpt.isPresent()) {
-                BotUser user = userOpt.get();
+            LocalTime scheduleTime = LocalTime.parse(timeString, TIME_FORMATTER);
+            return updateUser(chatId, user -> {
                 user.setScheduleTime(scheduleTime);
                 user.setRegistrationState(RegistrationState.TIMEZONE);
-                return userRepository.save(user);
-            }
+            });
         } catch (DateTimeParseException e) {
+            logger.warn("Invalid time format: {}", timeString);
             throw new IllegalArgumentException("Неверный формат времени. Используйте HH:mm (например, 14:00)");
         }
-        return null;
     }
 
     public BotUser updateTimezone(Long chatId, String timezone) {
-        Optional<BotUser> userOpt = userRepository.findByChatId(chatId);
-        if (userOpt.isPresent()) {
-            BotUser user = userOpt.get();
+        return updateUser(chatId, user -> {
             user.setTimezone(timezone);
             user.setRegistrationState(RegistrationState.COMPLETED);
-            user.setQuestionsPerSession(20);
-            return userRepository.save(user);
-        }
-        return null;
+            user.setQuestionsPerSession(AppConstants.DEFAULT_QUESTIONS_PER_SESSION);
+        });
     }
 
     public ReplyKeyboardMarkup getTimezoneKeyboard() {
@@ -139,21 +133,30 @@ public class RegistrationService {
     public BotUser updateQuestionsPerSession(Long chatId, String questionsCountStr) {
         try {
             int questionsCount = Integer.parseInt(questionsCountStr);
-            if (questionsCount < 1 || questionsCount > 50) {
-                throw new IllegalArgumentException("Количество вопросов должно быть от 1 до 50");
+            if (questionsCount < AppConstants.MIN_QUESTIONS_PER_SESSION || 
+                questionsCount > AppConstants.MAX_QUESTIONS_PER_SESSION) {
+                throw new IllegalArgumentException(
+                    String.format("Количество вопросов должно быть от %d до %d", 
+                        AppConstants.MIN_QUESTIONS_PER_SESSION, 
+                        AppConstants.MAX_QUESTIONS_PER_SESSION));
             }
 
-            Optional<BotUser> userOpt = userRepository.findByChatId(chatId);
-            if (userOpt.isPresent()) {
-                BotUser user = userOpt.get();
+            BotUser updated = updateUser(chatId, user -> {
                 user.setQuestionsPerSession(questionsCount);
                 clearSettingsState(chatId);
-                return userRepository.save(user);
-            } else {
+            });
+            
+            if (updated == null) {
                 throw new IllegalArgumentException("Пользователь не найден");
             }
+            
+            return updated;
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Пожалуйста, введите корректное число от 1 до 50");
+            logger.warn("Invalid questions count format: {}", questionsCountStr);
+            throw new IllegalArgumentException(
+                String.format("Пожалуйста, введите корректное число от %d до %d",
+                    AppConstants.MIN_QUESTIONS_PER_SESSION,
+                    AppConstants.MAX_QUESTIONS_PER_SESSION));
         }
     }
 

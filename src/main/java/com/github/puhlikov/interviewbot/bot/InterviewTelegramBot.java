@@ -9,6 +9,8 @@ import com.github.puhlikov.interviewbot.enums.RegistrationState;
 import com.github.puhlikov.interviewbot.enums.SettingsState;
 import com.github.puhlikov.interviewbot.model.BotUser;
 import com.github.puhlikov.interviewbot.model.Question;
+import com.github.puhlikov.interviewbot.service.ErrorHandler;
+import com.github.puhlikov.interviewbot.service.MessageSender;
 import com.github.puhlikov.interviewbot.service.QuestionCacheService;
 import com.github.puhlikov.interviewbot.service.QuestionService;
 import com.github.puhlikov.interviewbot.service.QuestionSessionService;
@@ -24,6 +26,9 @@ import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,35 +36,39 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class InterviewTelegramBot extends TelegramLongPollingBot {
 
-    private static final int DEFAULT_QUESTIONS_PER_SESSION = 20;
+    private static final Logger logger = LoggerFactory.getLogger(InterviewTelegramBot.class);
     
     private final String username;
-    private final QuestionService questions;
+    private final QuestionService questionService;
     private final RegistrationService registrationService;
     private final QuestionSessionService questionSessionService;
-    private final QuestionService questionService;
     private final WorkingApiService workingApiService;
     private final QuestionCacheService questionCacheService;
+    private final MessageSender messageSender;
+    private final ErrorHandler errorHandler;
     private final Set<Long> awaitingText = ConcurrentHashMap.newKeySet();
 
     public InterviewTelegramBot(
             @Value("${telegram.bot.username}") String username,
             @Value("${telegram.bot.token}") String token,
-            QuestionService questions,
+            QuestionService questionService,
             RegistrationService registrationService,
             QuestionSessionService questionSessionService,
-            QuestionService questionService,
             WorkingApiService workingApiService,
-            QuestionCacheService questionCacheService
+            QuestionCacheService questionCacheService,
+            MessageSender messageSender,
+            ErrorHandler errorHandler
     ) {
         super(token);
         this.username = username;
-        this.questions = questions;
+        this.questionService = questionService;
         this.registrationService = registrationService;
         this.questionSessionService = questionSessionService;
-        this.questionService = questionService;
         this.workingApiService = workingApiService;
         this.questionCacheService = questionCacheService;
+        this.messageSender = messageSender;
+        this.errorHandler = errorHandler;
+        this.messageSender.setBot(this);
     }
 
     @Override
@@ -76,7 +85,14 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 handleCallback(update.getCallbackQuery());
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            Long chatId = update.hasMessage() 
+                ? update.getMessage().getChatId() 
+                : (update.hasCallbackQuery() ? update.getCallbackQuery().getMessage().getChatId() : null);
+            if (chatId != null) {
+                errorHandler.handleError(chatId, e);
+            } else {
+                errorHandler.handleErrorSilently(e);
+            }
         }
     }
 
@@ -108,16 +124,32 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
             return;
         }
 
-        // Если пользователь в сессии вопросов и нажал "Ответить" — отправляем текст на проверку
+        // Если пользователь в сессии вопросов и нажал "Ответить" — отправляем текст на проверку и оценку
         if (questionCacheService.getUserCache(chatId) != null && 
             awaitingText.contains(chatId) && 
             !text.startsWith("/")) {
             awaitingText.remove(chatId); // Удаляем из ожидающих, чтобы не обработать повторно
-            String prompt = Messages.gptVerificationPrompt(text);
-            workingApiService.getAnswer(prompt).subscribe(gptResult -> {
-                execSend(chatId, "🤖 " + gptResult);
-                showContinueOptions(chatId); // Добавляем кнопки для продолжения
-            });
+            
+            var cache = questionCacheService.getUserCache(chatId);
+            Question currentQuestion = cache.getCurrentQuestion();
+            
+            if (currentQuestion != null) {
+                execSend(chatId, "⏳ Оцениваю ваш ответ...");
+                
+                // Оцениваем ответ пользователя
+                workingApiService.evaluateAnswer(currentQuestion.getQuestionText(), text)
+                    .subscribe(score -> {
+                        // Сохраняем оценку только в кэш сессии
+                        cache.addScore(score);
+                        
+                        execSend(chatId, String.format("✅ Ваш ответ оценен: **%d/10**\n\n📝 Ваш ответ: %s", score, text));
+                        showContinueOptions(chatId);
+                    }, error -> {
+                        errorHandler.handleErrorWithMessage(chatId, error, 
+                            "❌ Произошла ошибка при оценке ответа. Попробуйте еще раз.");
+                        showContinueOptions(chatId);
+                    });
+            }
             return;
         }
 
@@ -157,13 +189,15 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                     var keyboard = registrationService.getTimezoneKeyboard();
                     execSend(chatId, Messages.ENTER_TIME, keyboard);
                 } catch (IllegalArgumentException e) {
-                    execSend(chatId, Messages.INVALID_TIME_FORMAT);
+                    errorHandler.handleError(chatId, e);
                 }
                 break;
 
             case TIMEZONE:
                 registrationService.updateTimezone(chatId, text);
-                int questionsPerSession = user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : DEFAULT_QUESTIONS_PER_SESSION;
+                int questionsPerSession = user.getQuestionsPerSession() != null 
+                    ? user.getQuestionsPerSession() 
+                    : com.github.puhlikov.interviewbot.bot.constants.AppConstants.DEFAULT_QUESTIONS_PER_SESSION;
                 execSend(chatId,
                         Messages.registrationComplete(user.getScheduleTime().toString(), text, questionsPerSession),
                         KeyboardBuilder.createMainReplyKeyboard()
@@ -192,7 +226,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     }
 
     private void sendQuestion(Long chatId) {
-        var questionList = questions.getRandomQuestions(1);
+        var questionList = questionService.getRandomQuestions(1);
         if (questionList.isEmpty()) {
             execSend(chatId, Messages.NO_QUESTIONS_IN_DB);
             return;
@@ -238,15 +272,27 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     private void handleAnswerCallback(CallbackQuery cq, String questionId) {
         try {
             var qid = Long.parseLong(questionId);
-            questions.getById(qid).ifPresent(q -> {
+            var chatId = cq.getMessage().getChatId();
+            questionService.getById(qid).ifPresent(q -> {
                 answerCallback(cq, Messages.GENERATING_ANSWER);
+                
+                // Проверяем, находится ли пользователь в сессии вопросов
+                var cache = questionCacheService.getUserCache(chatId);
+                if (cache != null) {
+                    // Пользователь в сессии - ставим оценку 0 только в кэш
+                    cache.addScore(0);
+                }
+                
                 workingApiService.getAnswer(q.getQuestionText()).subscribe(answer -> {
-                    execSend(cq.getMessage().getChatId(), Messages.formattedAnswer(answer));
-                    showContinueOptions(cq.getMessage().getChatId());
+                    execSend(chatId, Messages.formattedAnswer(answer));
+                    if (cache != null) {
+                        execSend(chatId, "⚠️ Поскольку вы посмотрели ответ, за этот вопрос поставлена оценка **0/10**");
+                    }
+                    showContinueOptions(chatId);
                 });
             });
         } catch (NumberFormatException e) {
-            // Invalid question ID
+            errorHandler.handleErrorSilently(e);
         }
     }
 
@@ -273,16 +319,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     }
 
     private void execSend(Long chatId, String text, Object replyMarkup) {
-        try {
-            var sm = SendMessage.builder()
-                    .chatId(chatId.toString())
-                    .text(text)
-                    .replyMarkup((ReplyKeyboard) replyMarkup)
-                    .build();
-            execute(sm);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        messageSender.sendMessage(chatId, text, (ReplyKeyboard) replyMarkup);
     }
 
     private boolean handleQuestionSession(Long chatId, String text) {
@@ -360,8 +397,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 answerCallback(cq, "Сложность выбрана: " + difficultyText);
             }
         } catch (Exception e) {
-            e.printStackTrace();
-            execSend(cq.getMessage().getChatId(), Messages.ERROR_SAVING_QUESTION);
+            errorHandler.handleErrorWithMessage(cq.getMessage().getChatId(), e, Messages.ERROR_SAVING_QUESTION);
             questionSessionService.completeSession(cq.getMessage().getChatId());
         }
     }
@@ -373,7 +409,9 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     }
 
     private void startQuestionSession(Long chatId, BotUser user) {
-        int questionsCount = user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : DEFAULT_QUESTIONS_PER_SESSION;
+        int questionsCount = user.getQuestionsPerSession() != null 
+            ? user.getQuestionsPerSession() 
+            : com.github.puhlikov.interviewbot.bot.constants.AppConstants.DEFAULT_QUESTIONS_PER_SESSION;
 
         // Проверяем, есть ли достаточное количество вопросов в базе
         var availableQuestions = questionService.getRandomQuestions(1);
@@ -417,6 +455,16 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         boolean hasNext = questionCacheService.hasNextQuestion(chatId);
         var keyboard = KeyboardBuilder.createContinueKeyboard(hasNext);
         String message = hasNext ? Messages.WHAT_NEXT : Messages.SESSION_COMPLETED;
+        
+        // Если сессия завершена, показываем среднюю оценку
+        if (!hasNext) {
+            var cache = questionCacheService.getUserCache(chatId);
+            if (cache != null && !cache.getScores().isEmpty()) {
+                double averageScore = cache.getAverageScore();
+                message += String.format("\n\n📊 **Ваш средний результат: %.1f/10**", averageScore);
+            }
+        }
+        
         execSend(chatId, message, keyboard);
     }
 
@@ -425,7 +473,17 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         if (nextQuestion != null) {
             sendNextQuestion(chatId, false);
         } else {
-            execSend(chatId, Messages.SESSION_COMPLETED, KeyboardBuilder.createMainReplyKeyboard());
+            // Сессия завершена - показываем среднюю оценку
+            var cache = questionCacheService.getUserCache(chatId);
+            String completionMessage = Messages.SESSION_COMPLETED;
+            
+            if (cache != null && !cache.getScores().isEmpty()) {
+                double averageScore = cache.getAverageScore();
+                completionMessage += String.format("\n\n📊 **Ваш средний результат: %.1f/10**\n\n" +
+                    "Всего вопросов: %d", averageScore, cache.getScores().size());
+            }
+            
+            execSend(chatId, completionMessage, KeyboardBuilder.createMainReplyKeyboard());
             questionCacheService.clearUserCache(chatId);
         }
     }
@@ -437,7 +495,9 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
     private void showSettingsMenu(Long chatId, BotUser user) {
         var keyboard = KeyboardBuilder.createSettingsKeyboard();
-        int questionsPerSession = user.getQuestionsPerSession() != null ? user.getQuestionsPerSession() : DEFAULT_QUESTIONS_PER_SESSION;
+        int questionsPerSession = user.getQuestionsPerSession() != null 
+            ? user.getQuestionsPerSession() 
+            : com.github.puhlikov.interviewbot.bot.constants.AppConstants.DEFAULT_QUESTIONS_PER_SESSION;
         String currentSettings = Messages.currentSettings(
                 user.getScheduleTime().toString(),
                 questionsPerSession
@@ -464,7 +524,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 showSettingsMenu(chatId, user);
                 return true;
             } catch (IllegalArgumentException e) {
-                execSend(chatId, String.format(Messages.INVALID_QUESTIONS_COUNT, e.getMessage()));
+                errorHandler.handleError(chatId, e);
                 return true;
             }
         }
@@ -480,7 +540,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         if (userOpt.isPresent()) {
             startQuestionSession(chatId, userOpt.get());
         } else {
-            execSend(chatId, Messages.USER_NOT_FOUND);
+            errorHandler.handleError(chatId, new com.github.puhlikov.interviewbot.exception.UserNotFoundException());
         }
     }
 
@@ -496,6 +556,8 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         if (userOpt.isPresent()) {
             answerCallback(cq, Messages.OPENING_SETTINGS);
             showSettingsMenu(chatId, userOpt.get());
+        } else {
+            errorHandler.handleError(chatId, new com.github.puhlikov.interviewbot.exception.UserNotFoundException());
         }
     }
     
@@ -505,8 +567,8 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                     .callbackQueryId(cq.getId())
                     .text(text)
                     .build());
-        } catch (Exception ignored) {
-            // Ignore callback answer errors
+        } catch (Exception e) {
+            errorHandler.handleErrorSilently(e);
         }
     }
 

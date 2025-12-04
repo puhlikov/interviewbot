@@ -59,7 +59,7 @@ public final class KeyboardBuilder {
     }
     
     /**
-     * Создает Inline клавиатуру для вопроса с кнопками "Показать ответ", "Ответить", "Выйти"
+     * Создает Inline клавиатуру для вопроса с кнопками "Показать ответ" и "Выйти"
      */
     public static InlineKeyboardMarkup createQuestionKeyboard(Long questionId) {
         InlineKeyboardMarkup keyboard = new InlineKeyboardMarkup();
@@ -70,17 +70,12 @@ public final class KeyboardBuilder {
                 .callbackData(CallbackData.answerCallback(questionId))
                 .build();
         
-        var replyBtn = InlineKeyboardButton.builder()
-                .text(ButtonText.REPLY)
-                .callbackData(CallbackData.replyCallback(questionId))
-                .build();
-        
         var exitBtn = InlineKeyboardButton.builder()
                 .text(ButtonText.EXIT_SESSION)
                 .callbackData(CallbackData.EXIT_SESSION)
                 .build();
         
-        rows.add(List.of(answerBtn, replyBtn));
+        rows.add(List.of(answerBtn));
         rows.add(List.of(exitBtn));
         keyboard.setKeyboard(rows);
         
@@ -224,7 +219,7 @@ public final class KeyboardBuilder {
     }
     
     /**
-     * Создает простую Inline клавиатуру с одной кнопкой "Показать ответ" и "Ответить"
+     * Создает простую Inline клавиатуру с кнопкой "Показать ответ"
      */
     public static InlineKeyboardMarkup createSimpleQuestionKeyboard(Long questionId) {
         InlineKeyboardMarkup keyboard = new InlineKeyboardMarkup();
@@ -235,12 +230,7 @@ public final class KeyboardBuilder {
                 .callbackData(CallbackData.answerCallback(questionId))
                 .build();
         
-        var replyBtn = InlineKeyboardButton.builder()
-                .text(ButtonText.REPLY)
-                .callbackData(CallbackData.replyCallback(questionId))
-                .build();
-        
-        rows.add(List.of(answerBtn, replyBtn));
+        rows.add(List.of(answerBtn));
         keyboard.setKeyboard(rows);
         
         return keyboard;

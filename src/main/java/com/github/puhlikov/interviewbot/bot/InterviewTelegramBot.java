@@ -124,16 +124,18 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
             return;
         }
 
-        // Если пользователь в сессии вопросов и нажал "Ответить" — отправляем текст на проверку и оценку
+        // Если пользователь в сессии вопросов и пишет текст (не команду) - автоматически обрабатываем как ответ
         if (questionCacheService.getUserCache(chatId) != null && 
-            awaitingText.contains(chatId) && 
-            !text.startsWith("/")) {
-            awaitingText.remove(chatId); // Удаляем из ожидающих, чтобы не обработать повторно
+            !text.startsWith("/") &&
+            !registrationService.isInSettingsState(chatId, SettingsState.AWAITING_QUESTIONS_COUNT)) {
             
             var cache = questionCacheService.getUserCache(chatId);
             Question currentQuestion = cache.getCurrentQuestion();
             
             if (currentQuestion != null) {
+                // Удаляем из awaitingText, если там был (на случай, если нажали кнопку)
+                awaitingText.remove(chatId);
+                
                 execSend(chatId, "⏳ Оцениваю ваш ответ...");
                 
                 // Оцениваем ответ пользователя
@@ -276,10 +278,6 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
 
         if (data.startsWith(CallbackData.ANSWER_PREFIX)) {
             handleAnswerCallback(cq, data.substring(CallbackData.ANSWER_PREFIX.length()));
-        } else if (data.startsWith(CallbackData.REPLY_PREFIX)) {
-            awaitingText.add(chatId);
-            answerCallback(cq, Messages.WAITING_TEXT_RESPONSE);
-            execSend(chatId, Messages.WAITING_FOR_TEXT_ANSWER);
         } else if (data.startsWith(CallbackData.DIFFICULTY_PREFIX)) {
             handleDifficultySelection(cq, data.substring(CallbackData.DIFFICULTY_PREFIX.length()));
         } else {
@@ -636,9 +634,11 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         // Проверяем, находится ли пользователь в состоянии настройки количества вопросов
         if (registrationService.isInSettingsState(chatId, SettingsState.AWAITING_QUESTIONS_COUNT)) {
             try {
-                registrationService.updateQuestionsPerSession(chatId, text);
+                // Обновляем количество вопросов и получаем обновленного пользователя
+                BotUser updatedUser = registrationService.updateQuestionsPerSession(chatId, text);
                 execSend(chatId, String.format(Messages.QUESTIONS_COUNT_UPDATED, text));
-                showSettingsMenu(chatId, user);
+                // Используем обновленного пользователя для показа настроек
+                showSettingsMenu(chatId, updatedUser);
                 return true;
             } catch (IllegalArgumentException e) {
                 errorHandler.handleError(chatId, e);

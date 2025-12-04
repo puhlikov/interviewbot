@@ -391,9 +391,25 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     }
 
     private void handleAwaitingQuestionText(Long chatId, String text) {
-        questionSessionService.setQuestionText(chatId, text);
-        questionSessionService.updateState(chatId, QuestionState.AWAITING_QUESTION_CATEGORY);
-        execSend(chatId, Messages.ENTER_CATEGORY);
+        // Проверяем, относится ли вопрос к программированию
+        execSend(chatId, Messages.CHECKING_QUESTION);
+        
+        workingApiService.isProgrammingRelated(text)
+            .subscribe(isRelated -> {
+                if (isRelated) {
+                    questionSessionService.setQuestionText(chatId, text);
+                    questionSessionService.updateState(chatId, QuestionState.AWAITING_QUESTION_CATEGORY);
+                    execSend(chatId, Messages.ENTER_CATEGORY);
+                } else {
+                    execSend(chatId, Messages.QUESTION_NOT_PROGRAMMING_RELATED);
+                }
+            }, error -> {
+                logger.error("Error checking if question is programming-related for chatId: {}", chatId, error);
+                // В случае ошибки разрешаем вопрос, чтобы не блокировать пользователя
+                questionSessionService.setQuestionText(chatId, text);
+                questionSessionService.updateState(chatId, QuestionState.AWAITING_QUESTION_CATEGORY);
+                execSend(chatId, Messages.ENTER_CATEGORY);
+            });
     }
 
     private void handleAwaitingQuestionCategory(Long chatId, String text) {

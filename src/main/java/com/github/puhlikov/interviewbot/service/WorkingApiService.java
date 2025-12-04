@@ -120,7 +120,13 @@ public class WorkingApiService {
     private Mono<String> parseStreamChunk(String line) {
         String jsonData = line.substring(DATA_PREFIX.length()).trim();
         
-        if (DONE_MARKER.equals(jsonData)) {
+        if (DONE_MARKER.equals(jsonData) || jsonData.isEmpty()) {
+            return Mono.empty();
+        }
+        
+        // Проверяем, что JSON выглядит завершенным (хотя бы начинается и заканчивается правильно)
+        if (!jsonData.startsWith("{") || !jsonData.endsWith("}")) {
+            logger.debug("Skipping incomplete JSON chunk: {}", jsonData.length() > 100 ? jsonData.substring(0, 100) + "..." : jsonData);
             return Mono.empty();
         }
         
@@ -135,10 +141,18 @@ public class WorkingApiService {
             }
             
             return extractContentFromChunk(chunk);
+        } catch (com.fasterxml.jackson.core.JsonParseException e) {
+            // JSON обрывается или невалидный - это нормально для потоков, просто пропускаем
+            logger.debug("Incomplete or invalid JSON chunk received, skipping: {}", jsonData.length() > 100 ? jsonData.substring(0, 100) + "..." : jsonData);
+            return Mono.empty();
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // Другие ошибки парсинга JSON - пропускаем чанк
+            logger.debug("Error parsing JSON chunk, skipping: {}", e.getMessage());
+            return Mono.empty();
         } catch (RuntimeException e) {
             return Mono.error(e);
         } catch (Exception e) {
-            logger.warn("Error parsing stream chunk: {}", jsonData, e);
+            logger.warn("Unexpected error parsing stream chunk: {}", jsonData.length() > 100 ? jsonData.substring(0, 100) + "..." : jsonData, e);
             return Mono.empty();
         }
     }
@@ -175,6 +189,33 @@ public class WorkingApiService {
         return Mono.just("❌ Ошибка сети при запросе к AI: " + error.getMessage());
     }
 
+    /**
+     * Проверяет, относится ли вопрос к программированию или IT-технологиям
+     * 
+     * @param questionText текст вопроса для проверки
+     * @return Mono<Boolean> true если вопрос относится к программированию, false иначе
+     */
+    public Mono<Boolean> isProgrammingRelated(String questionText) {
+        String prompt = String.format(
+            "Проанализируй следующий вопрос и определи, относится ли он к программированию, разработке ПО, компьютерным наукам или IT-технологиям.\n\n" +
+            "Вопрос: %s\n\n" +
+            "Ответь только одним словом: ДА или НЕТ. Не добавляй никаких пояснений.",
+            questionText
+        );
+
+        return getAnswer(prompt)
+            .map(response -> {
+                String lowerResponse = response.toLowerCase().trim();
+                // Проверяем различные варианты положительного ответа
+                return lowerResponse.contains("да") || 
+                       lowerResponse.contains("yes") || 
+                       lowerResponse.startsWith("да") ||
+                       lowerResponse.startsWith("yes");
+            })
+            .timeout(Duration.ofSeconds(10))
+            .onErrorReturn(true); // В случае ошибки разрешаем вопрос, чтобы не блокировать пользователя
+    }
+    
     /**
      * Оценивает ответ пользователя по 10-бальной шкале и предоставляет дополнения
      * @param questionText Текст вопроса

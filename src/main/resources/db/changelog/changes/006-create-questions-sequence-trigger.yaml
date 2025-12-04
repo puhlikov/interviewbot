@@ -1,0 +1,41 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-create-questions-sequence-trigger
+      author: puhlikov
+      changes:
+        - sql:
+            sql: |
+              -- Функция для автоматической синхронизации последовательности
+              CREATE OR REPLACE FUNCTION sync_questions_sequence()
+              RETURNS TRIGGER AS $$
+              DECLARE
+                max_id BIGINT;
+                current_val BIGINT;
+              BEGIN
+                -- Получаем максимальный ID из таблицы
+                SELECT COALESCE(MAX(id), 0) INTO max_id FROM questions;
+                
+                -- Получаем текущее значение последовательности
+                SELECT last_value INTO current_val 
+                FROM pg_get_serial_sequence('questions', 'id')::regclass;
+                
+                -- Если последовательность отстает, синхронизируем её
+                IF current_val < max_id THEN
+                  PERFORM setval(
+                    pg_get_serial_sequence('questions', 'id'),
+                    max_id,
+                    false
+                  );
+                END IF;
+                
+                RETURN NEW;
+              END;
+              $$ LANGUAGE plpgsql;
+              
+              -- Создаем триггер, который выполняется перед каждой вставкой
+              DROP TRIGGER IF EXISTS sync_questions_sequence_trigger ON questions;
+              CREATE TRIGGER sync_questions_sequence_trigger
+                BEFORE INSERT ON questions
+                FOR EACH ROW
+                EXECUTE FUNCTION sync_questions_sequence();
+

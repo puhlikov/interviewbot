@@ -84,8 +84,39 @@ public class WorkingApiService {
                 .map(this::combineChunks)
                 .retryWhen(Retry.backoff(AppConstants.API_RETRY_ATTEMPTS, 
                         Duration.ofSeconds(AppConstants.API_RETRY_DELAY_SECONDS))
-                        .filter(throwable -> throwable.getMessage() != null && 
-                                throwable.getMessage().contains("Connection reset")))
+                        .filter(throwable -> {
+                            // Проверяем различные типы сетевых ошибок
+                            String message = throwable.getMessage();
+                            String className = throwable.getClass().getName();
+                            
+                            // Connection reset ошибки
+                            if (message != null && (
+                                message.contains("Connection reset") ||
+                                message.contains("Connection reset by peer") ||
+                                message.contains("recvAddress")
+                            )) {
+                                return true;
+                            }
+                            
+                            // Закрытые каналы и SSL ошибки
+                            if (className.contains("ClosedChannelException") ||
+                                className.contains("NativeIoException") ||
+                                className.contains("SSLHandshakeException") ||
+                                className.contains("StacklessSSLHandshakeException")) {
+                                return true;
+                            }
+                            
+                            // Другие сетевые ошибки
+                            if (message != null && (
+                                message.contains("Connection closed") ||
+                                message.contains("Connection refused") ||
+                                message.contains("timeout")
+                            )) {
+                                return true;
+                            }
+                            
+                            return false;
+                        }))
                 .onErrorResume(this::handleError);
     }
     

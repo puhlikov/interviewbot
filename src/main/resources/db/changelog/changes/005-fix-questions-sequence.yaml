@@ -2,6 +2,7 @@ databaseChangeLog:
   - changeSet:
       id: 005-fix-questions-sequence
       author: puhlikov
+      validCheckSum: ANY
       changes:
         - sql:
             sql: |

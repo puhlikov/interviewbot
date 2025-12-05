@@ -4,7 +4,7 @@ databaseChangeLog:
       author: puhlikov
       changes:
         - sql:
-            sql: CREATE OR REPLACE FUNCTION sync_questions_sequence() RETURNS TRIGGER AS $BODY$ DECLARE max_id BIGINT; BEGIN SELECT COALESCE(MAX(id), 0) INTO max_id FROM questions; IF max_id > 0 THEN PERFORM setval(pg_get_serial_sequence('questions', 'id'), max_id, false); END IF; RETURN NEW; END; $BODY$ LANGUAGE plpgsql;
+            sql: CREATE OR REPLACE FUNCTION sync_questions_sequence() RETURNS TRIGGER AS $BODY$ DECLARE max_id BIGINT; seq_name TEXT; BEGIN SELECT COALESCE(MAX(id), 0) INTO max_id FROM questions; seq_name := pg_get_serial_sequence('questions', 'id'); IF seq_name IS NOT NULL AND max_id > 0 THEN PERFORM setval(seq_name, max_id + 1, false); END IF; RETURN NEW; END; $BODY$ LANGUAGE plpgsql;
             splitStatements: false
         - sql:
             sql: DROP TRIGGER IF EXISTS sync_questions_sequence_trigger ON questions;

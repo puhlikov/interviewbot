@@ -16,3 +16,5 @@ databaseChangeLog:
       file: db/changelog/changes/005-fix-questions-sequence.yaml
   - include:
       file: db/changelog/changes/006-create-questions-sequence-trigger.yaml
+  - include:
+      file: db/changelog/changes/007-sync-questions-sequence-now.yaml

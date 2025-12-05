@@ -1,0 +1,16 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-sync-questions-sequence-now
+      author: puhlikov
+      changes:
+        - sql:
+            sql: |
+              -- Немедленная синхронизация последовательности с текущим максимальным ID
+              -- Устанавливаем последовательность на MAX(id) + 1, чтобы следующая вставка использовала правильный ID
+              SELECT setval(
+                pg_get_serial_sequence('questions', 'id'),
+                COALESCE((SELECT MAX(id) FROM questions), 0) + 1,
+                false
+              );
+            splitStatements: false
+

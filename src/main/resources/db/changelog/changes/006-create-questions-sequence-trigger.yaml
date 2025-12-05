@@ -7,7 +7,7 @@ databaseChangeLog:
             sql: |
               -- Функция для автоматической синхронизации последовательности
               CREATE OR REPLACE FUNCTION sync_questions_sequence()
-              RETURNS TRIGGER AS $$
+              RETURNS TRIGGER AS $func$
               DECLARE
                 max_id BIGINT;
                 current_val BIGINT;
@@ -30,12 +30,17 @@ databaseChangeLog:
                 
                 RETURN NEW;
               END;
-              $$ LANGUAGE plpgsql;
-              
+              $func$ LANGUAGE plpgsql;
+            splitStatements: false
+            endDelimiter: ;
+        - sql:
+            sql: |
               -- Создаем триггер, который выполняется перед каждой вставкой
               DROP TRIGGER IF EXISTS sync_questions_sequence_trigger ON questions;
               CREATE TRIGGER sync_questions_sequence_trigger
                 BEFORE INSERT ON questions
                 FOR EACH ROW
                 EXECUTE FUNCTION sync_questions_sequence();
+            splitStatements: false
+            endDelimiter: ;
 

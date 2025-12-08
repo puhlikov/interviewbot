@@ -30,6 +30,7 @@ public final class ButtonText {
     // Settings buttons
     public static final String CHANGE_TIME = "🕐 Изменить время рассылки";
     public static final String CHANGE_COUNT = "📊 Изменить количество вопросов";
+    public static final String DISABLE_NOTIFICATIONS = "🔕 Отключить уведомления";
     public static final String BACK = "🔙 Назад";
     
     private ButtonText() {

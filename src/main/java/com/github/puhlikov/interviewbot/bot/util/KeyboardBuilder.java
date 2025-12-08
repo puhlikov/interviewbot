@@ -199,6 +199,11 @@ public final class KeyboardBuilder {
                 .callbackData(CallbackData.SETTINGS_COUNT)
                 .build();
         
+        var disableNotificationsBtn = InlineKeyboardButton.builder()
+                .text(ButtonText.DISABLE_NOTIFICATIONS)
+                .callbackData(CallbackData.SETTINGS_DISABLE_NOTIFICATIONS)
+                .build();
+        
         var addQuestionBtn = InlineKeyboardButton.builder()
                 .text(ButtonText.ADD_QUESTION)
                 .callbackData(CallbackData.ADD_QUESTION)
@@ -211,6 +216,7 @@ public final class KeyboardBuilder {
         
         rows.add(List.of(timeBtn));
         rows.add(List.of(countBtn));
+        rows.add(List.of(disableNotificationsBtn));
         rows.add(List.of(addQuestionBtn));
         rows.add(List.of(backBtn));
         keyboard.setKeyboard(rows);

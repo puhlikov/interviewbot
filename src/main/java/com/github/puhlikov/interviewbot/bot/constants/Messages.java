@@ -86,10 +86,13 @@ public final class Messages {
     
     // Settings messages
     public static String currentSettings(String scheduleTime, int questionsPerSession) {
+        String timeDisplay = scheduleTime != null ? scheduleTime : "❌ Отключено";
         return "⚙️ **Текущие настройки:**\n\n" +
-                "🕐 Время рассылки: " + scheduleTime + "\n" +
+                "🕐 Время рассылки: " + timeDisplay + "\n" +
                 "📊 Вопросов в сессии: " + questionsPerSession;
     }
+    
+    public static final String NOTIFICATIONS_DISABLED = "✅ Уведомления отключены. Вы больше не будете получать ежедневные уведомления о прохождении сессии.";
     
     public static final String SELECT_SETTING_TO_CHANGE = "Выберите, что хотите изменить:";
     public static final String ENTER_NEW_TIME = "🕐 Введите новое время для ежедневной рассылки в формате HH:mm (например, 14:00):";

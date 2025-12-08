@@ -35,6 +35,7 @@ public final class CallbackData {
     // Settings callbacks
     public static final String SETTINGS_TIME = "SETTINGS_TIME";
     public static final String SETTINGS_COUNT = "SETTINGS_COUNT";
+    public static final String SETTINGS_DISABLE_NOTIFICATIONS = "SETTINGS_DISABLE_NOTIFICATIONS";
     
     private CallbackData() {
         // Utility class

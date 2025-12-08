@@ -127,7 +127,8 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         // Если пользователь в сессии вопросов и пишет текст (не команду) - автоматически обрабатываем как ответ
         if (questionCacheService.getUserCache(chatId) != null && 
             !text.startsWith("/") &&
-            !registrationService.isInSettingsState(chatId, SettingsState.AWAITING_QUESTIONS_COUNT)) {
+            !registrationService.isInSettingsState(chatId, SettingsState.AWAITING_QUESTIONS_COUNT) &&
+            !registrationService.isInSettingsState(chatId, SettingsState.AWAITING_TIME)) {
             
             var cache = questionCacheService.getUserCache(chatId);
             Question currentQuestion = cache.getCurrentQuestion();
@@ -290,6 +291,7 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 case CallbackData.STOP_QUESTIONS, CallbackData.EXIT_SESSION -> handleStopQuestions(chatId);
                 case CallbackData.SETTINGS_TIME -> handleSettingsTime(chatId);
                 case CallbackData.SETTINGS_COUNT -> handleSettingsCount(chatId);
+                case CallbackData.SETTINGS_DISABLE_NOTIFICATIONS -> handleDisableNotifications(cq);
                 case CallbackData.SETTINGS_MENU -> handleSettingsMenu(cq);
                 case CallbackData.BACK_TO_MENU -> handleBackToMenu(chatId);
             }
@@ -613,14 +615,18 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
         int questionsPerSession = user.getQuestionsPerSession() != null 
             ? user.getQuestionsPerSession() 
             : com.github.puhlikov.interviewbot.bot.constants.AppConstants.DEFAULT_QUESTIONS_PER_SESSION;
+        String scheduleTimeStr = user.getScheduleTime() != null 
+            ? user.getScheduleTime().toString() 
+            : null;
         String currentSettings = Messages.currentSettings(
-                user.getScheduleTime().toString(),
+                scheduleTimeStr,
                 questionsPerSession
         );
         execSend(chatId, currentSettings + "\n\n" + Messages.SELECT_SETTING_TO_CHANGE, keyboard);
     }
 
     private void handleSettingsTime(Long chatId) {
+        registrationService.startTimeSetting(chatId);
         registrationService.updateUserState(chatId, RegistrationState.SCHEDULE_TIME);
         execSend(chatId, Messages.ENTER_NEW_TIME);
     }
@@ -628,6 +634,19 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
     private void handleSettingsCount(Long chatId) {
         registrationService.startQuestionsCountSetting(chatId);
         execSend(chatId, Messages.ENTER_QUESTIONS_COUNT);
+    }
+
+    private void handleDisableNotifications(CallbackQuery cq) {
+        var chatId = cq.getMessage().getChatId();
+        try {
+            BotUser updatedUser = registrationService.disableNotifications(chatId);
+            answerCallback(cq, Messages.NOTIFICATIONS_DISABLED);
+            showSettingsMenu(chatId, updatedUser);
+        } catch (Exception e) {
+            errorHandler.handleErrorWithMessage(chatId, e, 
+                "❌ Произошла ошибка при отключении уведомлений. Попробуйте еще раз.");
+            answerCallback(cq, "❌ Ошибка");
+        }
     }
 
     private boolean handleSettings(Long chatId, String text, BotUser user) {
@@ -645,6 +664,21 @@ public class InterviewTelegramBot extends TelegramLongPollingBot {
                 return true;
             }
         }
+        
+        // Проверяем, находится ли пользователь в состоянии настройки времени (в настройках)
+        if (registrationService.isInSettingsState(chatId, SettingsState.AWAITING_TIME)) {
+            try {
+                BotUser updatedUser = registrationService.updateScheduleTimeForSettings(chatId, text);
+                registrationService.clearSettingsState(chatId);
+                execSend(chatId, "✅ Время рассылки изменено на: " + text);
+                showSettingsMenu(chatId, updatedUser);
+                return true;
+            } catch (IllegalArgumentException e) {
+                errorHandler.handleError(chatId, e);
+                return true;
+            }
+        }
+        
         return false;
     }
 

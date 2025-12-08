@@ -107,6 +107,19 @@ public class RegistrationService {
         }
     }
 
+    public BotUser updateScheduleTimeForSettings(Long chatId, String timeString) {
+        try {
+            LocalTime scheduleTime = LocalTime.parse(timeString, TIME_FORMATTER);
+            return updateUser(chatId, user -> {
+                user.setScheduleTime(scheduleTime);
+                // Не меняем состояние регистрации при изменении в настройках
+            });
+        } catch (DateTimeParseException e) {
+            logger.warn("Invalid time format: {}", timeString);
+            throw new IllegalArgumentException("Неверный формат времени. Используйте HH:mm (например, 14:00)");
+        }
+    }
+
     public BotUser updateTimezone(Long chatId, String timezone) {
         return updateUser(chatId, user -> {
             user.setTimezone(timezone);
@@ -176,11 +189,27 @@ public class RegistrationService {
         userSettingsState.put(chatId, SettingsState.AWAITING_QUESTIONS_COUNT);
     }
 
+    public void startTimeSetting(Long chatId) {
+        userSettingsState.put(chatId, SettingsState.AWAITING_TIME);
+    }
+
     public boolean isInSettingsState(Long chatId, SettingsState state) {
         return userSettingsState.getOrDefault(chatId, SettingsState.NONE) == state;
     }
 
     public void clearSettingsState(Long chatId) {
         userSettingsState.remove(chatId);
+    }
+
+    public BotUser disableNotifications(Long chatId) {
+        BotUser updated = updateUser(chatId, user -> {
+            user.setScheduleTime(null);
+        });
+        
+        if (updated == null) {
+            throw new IllegalArgumentException("Пользователь не найден");
+        }
+        
+        return updated;
     }
 }
